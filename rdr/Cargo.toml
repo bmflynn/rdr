@@ -1,0 +1,27 @@
+[package]
+name = "rdr"
+version = "0.1.0"
+edition = "2021"
+license-file = "LICENSE.txt"
+authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "rdr"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.82"
+ccsds = { path = "../../ccsds-rs" }
+chrono = "0.4.38"
+crossbeam = "0.8.4"
+hdf5 = "0.8.1"
+hdf5-sys = "0.8.1"
+lazy_static = "1.4.0"
+leap-seconds = "0.1.0"
+ndarray = "0.15.6"
+serde = { version = "1.0.198", features = ["serde_derive"] }
+serde_yaml = "0.9.34"
+tempfile = "3.10.1"
+tracing = { version = "0.1.40", features = ["log"] }

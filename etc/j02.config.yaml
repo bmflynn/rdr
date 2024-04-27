@@ -1,0 +1,150 @@
+origin: test
+mode: dev
+
+satellite:
+  id: j03
+  short_name: JPSS-3
+  base_time: 1698019234000000
+  mission: JPSS-3/JPSS
+
+products:
+  - product_id: RVIRS
+    short_name: VIIRS-SCIENCE-RDR
+    type_id: SCIENCE
+    primary: true
+    sensor: VIIRS
+    gran_len: 85000000
+    packed_with: ["RNSCA"]
+    apids:
+      - { "num": 825, "name": "CAL", "max_expected": 1152 }
+      - { "num": 821, "name": "DNB", "max_expected": 816 }
+      - { "num": 827, "name": "DNB_HGA", "max_expected": 816 }
+      - { "num": 828, "name": "DNB_HGB", "max_expected": 816 }
+      - { "num": 823, "name": "DNB_LGS", "max_expected": 816 }
+      - { "num": 822, "name": "DNB_MGS", "max_expected": 816 }
+      - { "num": 826, "name": "ENG", "max_expected": 48 }
+      - { "num": 818, "name": "I01", "max_expected": 1584 }
+      - { "num": 819, "name": "I02", "max_expected": 1584 }
+      - { "num": 820, "name": "I03", "max_expected": 1584 }
+      - { "num": 813, "name": "I04", "max_expected": 1584 }
+      - { "num": 817, "name": "I05", "max_expected": 1584 }
+      - { "num": 804, "name": "M01", "max_expected": 816 }
+      - { "num": 803, "name": "M02", "max_expected": 816 }
+      - { "num": 802, "name": "M03", "max_expected": 816 }
+      - { "num": 800, "name": "M04", "max_expected": 816 }
+      - { "num": 801, "name": "M05", "max_expected": 816 }
+      - { "num": 805, "name": "M06", "max_expected": 816 }
+      - { "num": 806, "name": "M07", "max_expected": 816 }
+      - { "num": 809, "name": "M08", "max_expected": 816 }
+      - { "num": 807, "name": "M09", "max_expected": 816 }
+      - { "num": 808, "name": "M10", "max_expected": 816 }
+      - { "num": 810, "name": "M11", "max_expected": 816 }
+      - { "num": 812, "name": "M12", "max_expected": 816 }
+      - { "num": 811, "name": "M13", "max_expected": 816 }
+      - { "num": 816, "name": "M14", "max_expected": 816 }
+      - { "num": 815, "name": "M15", "max_expected": 816 }
+      - { "num": 814, "name": "M16", "max_expected": 816 }
+
+  - product_id: RCRIS
+    short_name: CRIS-SCIENCE-RDR
+    type_id: SCIENCE
+    primary: true
+    sensor: CrIS
+    gran_len: 31997000
+    packed_with: ["RNSCA"]
+    apids:
+      - { "num": 1289, "name": "EIGHT_S_SCI", "max_expected": 5 }
+      - { "num": 1290, "name": "ENG", "max_expected": 1 }
+      - { "num": 1315, "name": "NLW1", "max_expected": 121 }
+      - { "num": 1316, "name": "NLW2", "max_expected": 121 }
+      - { "num": 1317, "name": "NLW3", "max_expected": 121 }
+      - { "num": 1318, "name": "NLW4", "max_expected": 121 }
+      - { "num": 1319, "name": "NLW5", "max_expected": 121 }
+      - { "num": 1320, "name": "NLW6", "max_expected": 121 }
+      - { "num": 1321, "name": "NLW7", "max_expected": 121 }
+      - { "num": 1322, "name": "NLW8", "max_expected": 121 }
+      - { "num": 1323, "name": "NLW9", "max_expected": 121 }
+      - { "num": 1324, "name": "NMW1", "max_expected": 121 }
+      - { "num": 1325, "name": "NMW2", "max_expected": 121 }
+      - { "num": 1326, "name": "NMW3", "max_expected": 121 }
+      - { "num": 1327, "name": "NMW4", "max_expected": 121 }
+      - { "num": 1328, "name": "NMW5", "max_expected": 121 }
+      - { "num": 1329, "name": "NMW6", "max_expected": 121 }
+      - { "num": 1330, "name": "NMW7", "max_expected": 121 }
+      - { "num": 1331, "name": "NMW8", "max_expected": 121 }
+      - { "num": 1332, "name": "NMW9", "max_expected": 121 }
+      - { "num": 1333, "name": "NSW1", "max_expected": 121 }
+      - { "num": 1334, "name": "NSW2", "max_expected": 121 }
+      - { "num": 1335, "name": "NSW3", "max_expected": 121 }
+      - { "num": 1336, "name": "NSW4", "max_expected": 121 }
+      - { "num": 1337, "name": "NSW5", "max_expected": 121 }
+      - { "num": 1338, "name": "NSW6", "max_expected": 121 }
+      - { "num": 1339, "name": "NSW7", "max_expected": 121 }
+      - { "num": 1340, "name": "NSW8", "max_expected": 121 }
+      - { "num": 1341, "name": "NSW9", "max_expected": 121 }
+      - { "num": 1342, "name": "SLW1", "max_expected": 9 }
+      - { "num": 1343, "name": "SLW2", "max_expected": 9 }
+      - { "num": 1344, "name": "SLW3", "max_expected": 9 }
+      - { "num": 1345, "name": "SLW4", "max_expected": 9 }
+      - { "num": 1346, "name": "SLW5", "max_expected": 9 }
+      - { "num": 1347, "name": "SLW6", "max_expected": 9 }
+      - { "num": 1348, "name": "SLW7", "max_expected": 9 }
+      - { "num": 1349, "name": "SLW8", "max_expected": 9 }
+      - { "num": 1350, "name": "SLW9", "max_expected": 9 }
+      - { "num": 1351, "name": "SMW1", "max_expected": 9 }
+      - { "num": 1352, "name": "SMW2", "max_expected": 9 }
+      - { "num": 1353, "name": "SMW3", "max_expected": 9 }
+      - { "num": 1354, "name": "SMW4", "max_expected": 9 }
+      - { "num": 1355, "name": "SMW5", "max_expected": 9 }
+      - { "num": 1356, "name": "SMW6", "max_expected": 9 }
+      - { "num": 1357, "name": "SMW7", "max_expected": 9 }
+      - { "num": 1358, "name": "SMW8", "max_expected": 9 }
+      - { "num": 1359, "name": "SMW9", "max_expected": 9 }
+      - { "num": 1360, "name": "SSW1", "max_expected": 9 }
+      - { "num": 1361, "name": "SSW2", "max_expected": 9 }
+      - { "num": 1362, "name": "SSW3", "max_expected": 9 }
+      - { "num": 1363, "name": "SSW4", "max_expected": 9 }
+      - { "num": 1364, "name": "SSW5", "max_expected": 9 }
+      - { "num": 1365, "name": "SSW6", "max_expected": 9 }
+      - { "num": 1366, "name": "SSW7", "max_expected": 9 }
+      - { "num": 1367, "name": "SSW8", "max_expected": 9 }
+      - { "num": 1368, "name": "SSW9", "max_expected": 9 }
+      - { "num": 1369, "name": "CLW1", "max_expected": 9 }
+      - { "num": 1370, "name": "CLW2", "max_expected": 9 }
+      - { "num": 1371, "name": "CLW3", "max_expected": 9 }
+      - { "num": 1372, "name": "CLW4", "max_expected": 9 }
+      - { "num": 1373, "name": "CLW5", "max_expected": 9 }
+      - { "num": 1374, "name": "CLW6", "max_expected": 9 }
+      - { "num": 1375, "name": "CLW7", "max_expected": 9 }
+      - { "num": 1376, "name": "CLW8", "max_expected": 9 }
+      - { "num": 1377, "name": "CLW9", "max_expected": 9 }
+      - { "num": 1378, "name": "CMW1", "max_expected": 9 }
+      - { "num": 1379, "name": "CMW2", "max_expected": 9 }
+      - { "num": 1380, "name": "CMW3", "max_expected": 9 }
+      - { "num": 1381, "name": "CMW4", "max_expected": 9 }
+      - { "num": 1382, "name": "CMW5", "max_expected": 9 }
+      - { "num": 1383, "name": "CMW6", "max_expected": 9 }
+      - { "num": 1384, "name": "CMW7", "max_expected": 9 }
+      - { "num": 1385, "name": "CMW8", "max_expected": 9 }
+      - { "num": 1386, "name": "CMW9", "max_expected": 9 }
+      - { "num": 1387, "name": "CSW1", "max_expected": 9 }
+      - { "num": 1388, "name": "CSW2", "max_expected": 9 }
+      - { "num": 1389, "name": "CSW3", "max_expected": 9 }
+      - { "num": 1390, "name": "CSW4", "max_expected": 9 }
+      - { "num": 1391, "name": "CSW5", "max_expected": 9 }
+      - { "num": 1392, "name": "CSW6", "max_expected": 9 }
+      - { "num": 1393, "name": "CSW7", "max_expected": 9 }
+      - { "num": 1394, "name": "CSW8", "max_expected": 9 }
+      - { "num": 1395, "name": "CSW9", "max_expected": 9 }
+
+  - product_id: RNSCA
+    short_name: SPACECRAFT-DIARY-RDR
+    type_id: DIARY
+    primary: false
+    sensor: null
+    gran_len: 20000000
+    apids:
+      - { "num": 11, "name": "DIARY", "max_expected": 21 }
+      - { "num": 30, "name": "ACS10HZ", "max_expected": 201 }
+      - { "num": 34, "name": "ACS1HZ", "max_expected": 201 }
+      - { "num": 37, "name": "ACS07SOH", "max_expected": 21 }
