@@ -1,9 +1,28 @@
-use std::path::Path;
+use std::{
+    ffi::{c_char, c_ulonglong, c_void, CString},
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use hdf5::{types::VarLenAscii, File, Group};
+use hdf5::{types::VarLenAscii, File, Group, Selection};
+use hdf5_sys::{
+    h5::hsize_t,
+    h5d::{H5Dclose, H5Dcreate1, H5Dcreate2, H5Dget_space, H5Dopen, H5Dwrite},
+    h5f::{H5Fclose, H5Fopen, H5F_ACC_RDWR},
+    h5g::{H5Gclose, H5Gopen},
+    h5i::{hid_t, H5I_INVALID_HID},
+    h5p::H5P_DEFAULT,
+    h5r::{
+        H5R_type_t::{self, H5R_DATASET_REGION},
+        H5Rcreate,
+    },
+    h5s::{H5Sclose, H5Screate, H5Screate_simple, H5Sselect_all, H5S_ALL, H5S_UNLIMITED},
+    h5t::{H5T_class_t::H5T_REFERENCE, H5T_STD_REF_DSETREG},
+};
 use ndarray::arr1;
+use tracing::trace;
 
 use crate::{config::Config, rdr::Rdr};
 
@@ -34,23 +53,32 @@ pub fn filename(config: &Config, rdr: &Rdr, created: &DateTime<Utc>) -> String {
     )
 }
 
-pub fn write_hdf5(config: &Config, rdr: &Rdr, packed: &[Rdr], dest: &Path) -> Result<()> {
+pub fn write_hdf5(config: &Config, rdr: &Rdr, packed: &[Rdr], dest: &Path) -> Result<PathBuf> {
     if !dest.is_dir() {
         bail!("dest must be a directory");
     }
     let created = Utc::now();
     let fpath = dest.join(filename(config, rdr, &created));
 
-    let mut file = File::create(fpath)?;
+    {
+        let mut file = File::create(&fpath)?;
 
-    set_global_attrs(&mut file, config, &created)?;
+        set_global_attrs(&mut file, config, &created)?;
 
-    let all_data_group = file.create_group("All_Data")?;
+        let all_data_group = file.create_group("All_Data")?;
+        write_alldata_group(&all_data_group, &[rdr.clone()])?;
+        write_alldata_group(&all_data_group, packed)?;
 
-    create_alldata_group(&all_data_group, &[rdr.clone()])?;
-    create_alldata_group(&all_data_group, packed)?;
+        file.create_group(&format!("Data_Products/{}", rdr.product.short_name))?;
+        if !packed.is_empty() {
+            file.create_group(&format!("Data_Products/{}", packed[0].product.short_name))?;
+        }
+    }
 
-    todo!()
+    write_dataproducts_group(&fpath, &[rdr.clone()])?;
+    // write_dataproducts_group(&fpath, packed)?;
+
+    Ok(fpath)
 }
 
 fn set_global_attrs(file: &mut File, config: &Config, created: &DateTime<Utc>) -> Result<()> {
@@ -72,18 +100,18 @@ fn set_global_attrs(file: &mut File, config: &Config, created: &DateTime<Utc>) -
         file.new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .with_context(|| format!("creating {} attribute", name))?
+            .with_context(|| format!("creating {name} attribute"))?
             .write_raw(&[VarLenAscii::from_ascii(&val)
-                .with_context(|| format!("failed to create FixedAscii for {}", name))?])
-            .with_context(|| format!("writing {} attribute", name))?;
+                .with_context(|| format!("failed to create FixedAscii for {name}"))?])
+            .with_context(|| format!("writing {name} attribute"))?;
     }
 
     Ok(())
 }
 
-fn create_alldata_group(group: &Group, rdrs: &[Rdr]) -> Result<()> {
+fn write_alldata_group(group: &Group, rdrs: &[Rdr]) -> Result<()> {
     if rdrs.is_empty() {
-        bail!("At least 1 RDR is required");
+        return Ok(());
     }
     let subgroup = group.create_group(&format!("{}_All", rdrs[0].product.short_name))?;
     for (idx, rdr) in rdrs.iter().enumerate() {
@@ -92,7 +120,175 @@ fn create_alldata_group(group: &Group, rdrs: &[Rdr]) -> Result<()> {
             .new_dataset_builder()
             .with_data(&arr1(&rdr.compile()[..]))
             .create(name.clone().as_str())
-            .with_context(|| format!("creating {}", name))?;
+            .with_context(|| format!("creating {name}"))?;
+    }
+
+    Ok(())
+}
+
+macro_rules! cstr {
+    ($s:expr) => {
+        CString::new($s)?.as_ptr().cast::<c_char>()
+    };
+}
+
+#[allow(clippy::too_many_lines)]
+fn write_dataproducts_group(fpath: &Path, rdrs: &[Rdr]) -> Result<()> {
+    if rdrs.is_empty() {
+        return Ok(());
+    }
+
+    let file_id = unsafe {
+        let id = H5Fopen(
+            cstr!(fpath.as_os_str().as_bytes()),
+            H5F_ACC_RDWR,
+            H5P_DEFAULT,
+        );
+        if id == H5I_INVALID_HID {
+            bail!("failed to open file {fpath:?}: {id}");
+        }
+        id
+    };
+
+    let src_grp_id = unsafe {
+        let grp_name = format!("/All_Data/{}_All", rdrs[0].product.short_name);
+        let id = H5Gopen(
+            file_id,
+            CString::new(grp_name.clone())?.as_ptr().cast::<c_char>(),
+            H5P_DEFAULT,
+        );
+        if id == H5I_INVALID_HID {
+            bail!("failed to open source group {grp_name}");
+        }
+        id
+    };
+
+    // Assume group was already created
+    let dst_grp_id = unsafe {
+        let grp_name = format!("/Data_Products/{}", rdrs[0].product.short_name);
+        let id = H5Gopen(
+            file_id,
+            CString::new(grp_name.clone())?.as_ptr().cast::<c_char>(),
+            H5P_DEFAULT,
+        );
+        if id == H5I_INVALID_HID {
+            bail!("failed to open dest group {grp_name}");
+        }
+        id
+    };
+
+    for (idx, rdr) in rdrs.iter().enumerate() {
+        let src_path = format!(
+            "/All_Data/{}_All/RawApplicationPackets_{}",
+            rdr.product.short_name, idx
+        );
+        let dst_path = format!(
+            "/Data_Products/{}/{}_Gran_{}",
+            rdr.product.short_name, rdr.product.short_name, idx
+        );
+        let mut failed = false;
+        unsafe {
+            // 1. Create or open the dataset that contains the region
+            let src_dataset_id = H5Dopen(file_id, cstr!(src_path.clone()), H5P_DEFAULT);
+            trace!(
+                "source dataset invalid: {}",
+                src_dataset_id == H5I_INVALID_HID
+            );
+            failed |= src_dataset_id == H5I_INVALID_HID;
+
+            // 2. Get the dataspace for the dataset
+            let src_space_id = H5Dget_space(src_dataset_id);
+            trace!(
+                "source dataspace invalid: {}",
+                src_space_id == H5I_INVALID_HID
+            );
+            failed |= src_space_id == H5I_INVALID_HID;
+
+            // 3. Define a selection that specifies the region
+            let select_err = H5Sselect_all(src_space_id);
+            trace!("select source error: {}", select_err < 0);
+            failed |= select_err < 0;
+
+            // 4. Create a region reference using the dataset and dataspace with selection
+            let src_grp_id = H5Gopen(
+                file_id,
+                cstr!(format!("All_Data/{}_All", rdr.product.short_name)),
+                H5P_DEFAULT,
+            );
+            trace!("open source group error: {}", src_grp_id == H5I_INVALID_HID);
+            failed |= src_grp_id == H5I_INVALID_HID;
+            let ref_id: hid_t = 0;
+            let ref_err = H5Rcreate(
+                ref_id as *mut _,
+                src_grp_id,
+                cstr!(format!("RawApplicationPackets_{idx}")),
+                H5R_DATASET_REGION,
+                src_space_id,
+            );
+            trace!("create reference error: {}", ref_err < 0);
+            failed |= ref_err < 0;
+
+            H5Gclose(src_grp_id);
+            H5Sclose(src_space_id);
+            H5Dclose(src_dataset_id);
+
+            if failed {
+                bail!("failed to create source dataset reference");
+            }
+
+            //
+            //
+            // let dims: *const hsize_t = &(1 as hsize_t);
+            // let dst_space_id = H5Screate_simple(1, dims, std::ptr::null());
+            //
+            // let dst_dataset_id = H5Dcreate2(
+            //     file_id,
+            //     CString::new(dst_path.clone())?.as_ptr().cast::<c_char>(),
+            //     *H5T_STD_REF_DSETREG,
+            //     dst_space_id as hid_t,
+            //     H5P_DEFAULT,
+            //     H5P_DEFAULT,
+            //     H5P_DEFAULT,
+            // );
+            //
+            //
+            //
+            // H5Dclose(src_dataset_id);
+            // H5Dclose(dst_dataset_id);
+            // H5Sclose(dst_space_id);
+            // H5Sclose(src_space_id);
+            //
+            // if dst_space_id == H5I_INVALID_HID {
+            //     bail!("failed to create simple dataspace for {dst_path}");
+            // }
+            // if dst_dataset_id == H5I_INVALID_HID {
+            //     bail!("failed to create dataset for {dst_path}");
+            // }
+            // if src_space_id == H5I_INVALID_HID {
+            //     bail!("failed to get id for source dataspace {src_path}");
+            // }
+            // if src_dataset_id == H5I_INVALID_HID {
+            //     bail!("failed to get id for source dataset {src_path}");
+            // }
+            // if select_err < 0 {
+            //     bail!("failed to select dataspace for {src_path}");
+            // }
+            // if ref_err < 0 {
+            //     bail!("failed to create reference to {src_path} for {dst_path}");
+            // }
+        }
+    }
+
+    unsafe {
+        if H5Gclose(src_grp_id) < 0 {
+            bail!("failed to close src group");
+        }
+        if H5Gclose(dst_grp_id) < 0 {
+            bail!("failed to close dst group");
+        }
+        if H5Fclose(file_id) < 0 {
+            bail!("failed to close h5 file");
+        }
     }
 
     Ok(())

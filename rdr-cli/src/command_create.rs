@@ -65,18 +65,18 @@ pub fn create(
         let complete = collector.add(pkt_utc, pkt_iet, pkt);
 
         if let Some((rdr, packed)) = complete {
-            info!(
+            debug!(
                 "collected RDR {}/{} granule={}",
                 rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
             );
 
-            info!("writing h5 to {dest:?}");
-            write_hdf5(&config, &rdr, &packed, &dest).context("writing h5")?;
+            let fpath = write_hdf5(&config, &rdr, &packed, &dest).context("writing h5")?;
+            info!("wrote {fpath:?}");
         }
     }
 
     for (rdr, packed) in collector.finish() {
-        info!(
+        debug!(
             "collected RDR {}/{} granule={}",
             rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
         );

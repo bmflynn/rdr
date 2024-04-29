@@ -112,9 +112,9 @@ impl Rdr {
         // Static header should be good-to-go because it's updated on every call to add_packet
         dat.extend_from_slice(&self.header.as_bytes());
 
-        // Assume all collections have the same set of APIDs
-        let mut apids: Vec<u16> = self.apids.keys().copied().collect();
-        apids.sort_unstable();
+        let apids: Vec<u16> = self.product.apids.iter().map(|p| p.num).collect();
+        // let mut apids: Vec<u16> = self.apids.keys().copied().collect();
+        // apids.sort_unstable();
 
         // Write APID lists in numerical order
         let mut tracker_start_idx: u32 = 0;

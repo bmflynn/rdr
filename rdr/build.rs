@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn etc_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("etc").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../etc").join(name)
 }
 
 fn include_default_configs() -> Result<(), Box<dyn Error>> {
