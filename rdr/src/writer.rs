@@ -1,6 +1,10 @@
 use std::{
-    ffi::{c_char, c_ulonglong, c_void, CString},
-    os::unix::ffi::OsStrExt,
+    ffi::{c_char, c_uchar, c_ulonglong, c_void, CString},
+    io::stdout,
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::ffi::OsStrExt,
+    },
     path::{Path, PathBuf},
 };
 
@@ -9,12 +13,14 @@ use chrono::{DateTime, Utc};
 use hdf5::{types::VarLenAscii, File, Group, Selection};
 use hdf5_sys::{
     h5::hsize_t,
-    h5d::{H5Dclose, H5Dcreate1, H5Dcreate2, H5Dget_space, H5Dopen, H5Dwrite},
+    h5d::{H5Dclose, H5Dcreate1, H5Dcreate2, H5Dget_space, H5Dopen2, H5Dwrite},
+    h5e::H5Eprint,
     h5f::{H5Fclose, H5Fopen, H5F_ACC_RDWR},
     h5g::{H5Gclose, H5Gopen},
     h5i::{hid_t, H5I_INVALID_HID},
     h5p::H5P_DEFAULT,
     h5r::{
+        hdset_reg_ref_t,
         H5R_type_t::{self, H5R_DATASET_REGION},
         H5Rcreate,
     },
@@ -73,6 +79,8 @@ pub fn write_hdf5(config: &Config, rdr: &Rdr, packed: &[Rdr], dest: &Path) -> Re
         if !packed.is_empty() {
             file.create_group(&format!("Data_Products/{}", packed[0].product.short_name))?;
         }
+
+        file.close()?;
     }
 
     write_dataproducts_group(&fpath, &[rdr.clone()])?;
@@ -149,6 +157,7 @@ fn write_dataproducts_group(fpath: &Path, rdrs: &[Rdr]) -> Result<()> {
         }
         id
     };
+    trace!("opened file {file_id}");
 
     let src_grp_id = unsafe {
         let grp_name = format!("/All_Data/{}_All", rdrs[0].product.short_name);
@@ -162,129 +171,62 @@ fn write_dataproducts_group(fpath: &Path, rdrs: &[Rdr]) -> Result<()> {
         }
         id
     };
+    trace!("opened source group {src_grp_id}");
 
-    // Assume group was already created
-    let dst_grp_id = unsafe {
-        let grp_name = format!("/Data_Products/{}", rdrs[0].product.short_name);
-        let id = H5Gopen(
-            file_id,
-            CString::new(grp_name.clone())?.as_ptr().cast::<c_char>(),
-            H5P_DEFAULT,
+    let idx = 0;
+    let rdr = &rdrs[0];
+
+    let src_path = format!(
+        "/All_Data/{}_All/RawApplicationPackets_{}",
+        rdr.product.short_name, idx
+    );
+    let mut failed = false;
+    unsafe {
+        // 1. Create or open the dataset that contains the region
+        let src_dataset_id = H5Dopen2(file_id, cstr!(src_path.clone()), H5P_DEFAULT);
+        trace!(
+            "open source dataset {src_dataset_id}: {}",
+            src_dataset_id == H5I_INVALID_HID
         );
-        if id == H5I_INVALID_HID {
-            bail!("failed to open dest group {grp_name}");
-        }
-        id
-    };
+        failed |= src_dataset_id == H5I_INVALID_HID;
 
-    for (idx, rdr) in rdrs.iter().enumerate() {
-        let src_path = format!(
-            "/All_Data/{}_All/RawApplicationPackets_{}",
-            rdr.product.short_name, idx
+        // 2. Get the dataspace for the dataset
+        let src_space_id = H5Dget_space(src_dataset_id);
+        trace!(
+            "source space: {src_space_id}: {}",
+            src_space_id == H5I_INVALID_HID
         );
-        let dst_path = format!(
-            "/Data_Products/{}/{}_Gran_{}",
-            rdr.product.short_name, rdr.product.short_name, idx
+        failed |= src_space_id == H5I_INVALID_HID;
+
+        // 3. Define a selection that specifies the region
+        let select_err = H5Sselect_all(src_space_id);
+        trace!("source space selection {select_err}: {}", select_err < 0);
+        failed |= select_err < 0;
+
+        // 4. Create the reference
+        let mut ref_id: hdset_reg_ref_t = [0; 12];
+        let ref_err = H5Rcreate(
+            ref_id.as_mut_ptr().cast(),
+            src_grp_id,
+            cstr!(format!("RawApplicationPackets_{idx}")),
+            H5R_DATASET_REGION,
+            src_space_id,
         );
-        let mut failed = false;
-        unsafe {
-            // 1. Create or open the dataset that contains the region
-            let src_dataset_id = H5Dopen(file_id, cstr!(src_path.clone()), H5P_DEFAULT);
-            trace!(
-                "source dataset invalid: {}",
-                src_dataset_id == H5I_INVALID_HID
-            );
-            failed |= src_dataset_id == H5I_INVALID_HID;
+        H5Eprint(ref_err as hid_t, stdout().as_fd().as_raw_fd() as *mut _);
+        trace!("create source reference {ref_err}: {}", ref_err < 0);
+        failed |= ref_err < 0;
 
-            // 2. Get the dataspace for the dataset
-            let src_space_id = H5Dget_space(src_dataset_id);
-            trace!(
-                "source dataspace invalid: {}",
-                src_space_id == H5I_INVALID_HID
-            );
-            failed |= src_space_id == H5I_INVALID_HID;
+        H5Sclose(src_space_id);
+        H5Dclose(src_dataset_id);
 
-            // 3. Define a selection that specifies the region
-            let select_err = H5Sselect_all(src_space_id);
-            trace!("select source error: {}", select_err < 0);
-            failed |= select_err < 0;
-
-            // 4. Create a region reference using the dataset and dataspace with selection
-            let src_grp_id = H5Gopen(
-                file_id,
-                cstr!(format!("All_Data/{}_All", rdr.product.short_name)),
-                H5P_DEFAULT,
-            );
-            trace!("open source group error: {}", src_grp_id == H5I_INVALID_HID);
-            failed |= src_grp_id == H5I_INVALID_HID;
-            let ref_id: hid_t = 0;
-            let ref_err = H5Rcreate(
-                ref_id as *mut _,
-                src_grp_id,
-                cstr!(format!("RawApplicationPackets_{idx}")),
-                H5R_DATASET_REGION,
-                src_space_id,
-            );
-            trace!("create reference error: {}", ref_err < 0);
-            failed |= ref_err < 0;
-
-            H5Gclose(src_grp_id);
-            H5Sclose(src_space_id);
-            H5Dclose(src_dataset_id);
-
-            if failed {
-                bail!("failed to create source dataset reference");
-            }
-
-            //
-            //
-            // let dims: *const hsize_t = &(1 as hsize_t);
-            // let dst_space_id = H5Screate_simple(1, dims, std::ptr::null());
-            //
-            // let dst_dataset_id = H5Dcreate2(
-            //     file_id,
-            //     CString::new(dst_path.clone())?.as_ptr().cast::<c_char>(),
-            //     *H5T_STD_REF_DSETREG,
-            //     dst_space_id as hid_t,
-            //     H5P_DEFAULT,
-            //     H5P_DEFAULT,
-            //     H5P_DEFAULT,
-            // );
-            //
-            //
-            //
-            // H5Dclose(src_dataset_id);
-            // H5Dclose(dst_dataset_id);
-            // H5Sclose(dst_space_id);
-            // H5Sclose(src_space_id);
-            //
-            // if dst_space_id == H5I_INVALID_HID {
-            //     bail!("failed to create simple dataspace for {dst_path}");
-            // }
-            // if dst_dataset_id == H5I_INVALID_HID {
-            //     bail!("failed to create dataset for {dst_path}");
-            // }
-            // if src_space_id == H5I_INVALID_HID {
-            //     bail!("failed to get id for source dataspace {src_path}");
-            // }
-            // if src_dataset_id == H5I_INVALID_HID {
-            //     bail!("failed to get id for source dataset {src_path}");
-            // }
-            // if select_err < 0 {
-            //     bail!("failed to select dataspace for {src_path}");
-            // }
-            // if ref_err < 0 {
-            //     bail!("failed to create reference to {src_path} for {dst_path}");
-            // }
+        if failed {
+            bail!("failed to create source dataset reference");
         }
     }
 
     unsafe {
         if H5Gclose(src_grp_id) < 0 {
             bail!("failed to close src group");
-        }
-        if H5Gclose(dst_grp_id) < 0 {
-            bail!("failed to close dst group");
         }
         if H5Fclose(file_id) < 0 {
             bail!("failed to close h5 file");
