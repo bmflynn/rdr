@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use hdf5::{types::VarLenAscii, File};
 use hdf5_sys::{
@@ -18,10 +18,48 @@ use hdf5_sys::{
 };
 use ndarray::arr1;
 
-use crate::{config::Config, rdr::Rdr};
+use crate::{
+    config::{ProductSpec, SatSpec},
+    prelude::*,
+    rdr::Rdr,
+};
+
+/// The business-end of writing RDRs
+///
+/// # Errors
+/// All errors creating or wri
+pub fn write_hdf5(
+    sat: &SatSpec,
+    origin: &str,
+    mode: &str,
+    rdr: &Rdr,
+    packed: &[Rdr],
+    dest: &Path,
+) -> crate::error::Result<PathBuf> {
+    let created = Utc::now();
+    let fpath = dest.join(filename(sat, origin, mode, rdr, &created));
+
+    let mut file = File::create(&fpath).with_context(|| format!("opening {fpath:?}"))?;
+
+    set_global_attrs(sat, origin, &mut file, &created).context("setting global attrs")?;
+
+    // Handle the primary RDR
+    let path = write_rdr_to_alldata(&file, 0, rdr)?;
+    write_rdr_to_dataproducts(&file, rdr, &path)?;
+    write_aggr_group(&file, 1, &rdr.product)?;
+
+    // Handle the packed products
+    for (idx, rdr) in packed.iter().enumerate() {
+        let path = write_rdr_to_alldata(&file, idx, rdr)?;
+        write_rdr_to_dataproducts(&file, rdr, &path)?;
+    }
+    write_aggr_group(&file, packed.len(), &packed[0].product)?;
+
+    Ok(fpath)
+}
 
 /// Create an IDPS style RDR filename
-pub fn filename(config: &Config, rdr: &Rdr, created: &DateTime<Utc>) -> String {
+fn filename(sat: &SatSpec, origin: &str, mode: &str, rdr: &Rdr, created: &DateTime<Utc>) -> String {
     let mut product_ids = [
         vec![rdr.product.product_id.clone()],
         rdr.product.packed_with.clone(),
@@ -29,62 +67,35 @@ pub fn filename(config: &Config, rdr: &Rdr, created: &DateTime<Utc>) -> String {
     .concat();
     product_ids.sort();
 
-    let start_ns = i64::try_from(rdr.granule_utc * 1000).unwrap();
+    let start_ns = i64::try_from(rdr.granule_utc * 1000).unwrap_or(0);
     let start_dt: DateTime<Utc> = DateTime::from_timestamp_nanos(start_ns);
-    let end_ns = i64::try_from(rdr.granule_utc + rdr.product.gran_len * 1000).unwrap();
+    let end_ns = i64::try_from(rdr.granule_utc + rdr.product.gran_len * 1000).unwrap_or(0);
     let end_dt: DateTime<Utc> = DateTime::from_timestamp_nanos(end_ns);
 
     format!(
         "{}_{}_d{}_t{}_e{}_c{}_{}u_{}.h5",
         product_ids.join("-"),
-        config.satellite.id,
+        sat.id,
         start_dt.format("%Y%m%d"),
         &start_dt.format("%H%M%S%f").to_string()[..7],
         &end_dt.format("%H%M%S%f").to_string()[..7],
         &created.format("%Y%m%d%H%M%S%f").to_string()[..20],
-        &config.origin[..3],
-        &config.mode[..3],
+        &origin[..3],
+        &mode[..3],
     )
 }
 
-pub fn write_hdf5(config: &Config, rdr: &Rdr, packed: &[Rdr], dest: &Path) -> Result<PathBuf> {
-    if !dest.is_dir() {
-        bail!("dest must be a directory");
-    }
-    let created = Utc::now();
-    let fpath = dest.join(filename(config, rdr, &created));
-
-    let mut file = File::create(&fpath)?;
-
-    set_global_attrs(&mut file, config, &created)?;
-
-    file.create_group("All_Data")?;
-    file.create_group("Data_Products")?;
-
-    file.create_group(&format!("Data_Products/{}", rdr.product.short_name))?;
-    write_aggr_group(&file, &[rdr.clone()])?;
-    let path = write_rdr_to_alldata(&file, 0, rdr)?;
-    write_rdr_to_dataproducts(&file, rdr, &path)?;
-
-    for (idx, rdr) in packed.iter().enumerate() {
-        let group_name = &format!("Data_Products/{}", rdr.product.short_name);
-        if file.group(group_name).is_err() {
-            file.create_group(group_name)?;
-            write_aggr_group(&file, packed)?;
-        }
-        let path = write_rdr_to_alldata(&file, idx, rdr)?;
-        write_rdr_to_dataproducts(&file, rdr, &path)?;
-    }
-
-    Ok(fpath)
-}
-
-fn set_global_attrs(file: &mut File, config: &Config, created: &DateTime<Utc>) -> Result<()> {
+fn set_global_attrs(
+    sat: &SatSpec,
+    origin: &str,
+    file: &mut File,
+    created: &DateTime<Utc>,
+) -> Result<()> {
     for (name, val) in [
         ("Distributor", "arch"),
-        ("Mission_Name", &config.satellite.mission),
-        ("Platform_Short_Name", &config.satellite.short_name),
-        ("N_Dataset_Source", &config.origin),
+        ("Mission_Name", &sat.mission),
+        ("Platform_Short_Name", &sat.short_name),
+        ("N_Dataset_Source", origin),
         ("N_HDF_Creation_Date", &created.format("%Y%m%d").to_string()),
         (
             "N_HDF_Creation_Time",
@@ -95,19 +106,36 @@ fn set_global_attrs(file: &mut File, config: &Config, created: &DateTime<Utc>) -
             ),
         ),
     ] {
-        file.new_attr::<VarLenAscii>()
+        let attr = file
+            .new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .with_context(|| format!("creating {name} attribute"))?
-            .write_raw(&[VarLenAscii::from_ascii(&val)
-                .with_context(|| format!("failed to create FixedAscii for {name}"))?])
-            .with_context(|| format!("writing {name} attribute"))?;
+            .map_err(|e| Error::Hdf5 {
+                name: format!("name={name} val={val}"),
+                msg: e.to_string(),
+            })?;
+
+        let ascii = VarLenAscii::from_ascii(&val).map_err(|e| Error::Hdf5 {
+            name: format!("name={name} val={val}"),
+            msg: e.to_string(),
+        })?;
+
+        attr.write_raw(&[ascii]).map_err(|e| Error::Hdf5 {
+            name: format!("name={name} val={val}"),
+            msg: e.to_string(),
+        })?;
     }
 
     Ok(())
 }
 
 fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<String> {
+    if file.group("All_Data").is_err() {
+        file.create_group("All_Data").map_err(|e| Error::Hdf5 {
+            name: "All_Data".to_string(),
+            msg: e.to_string(),
+        })?;
+    }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
         rdr.product.short_name
@@ -115,39 +143,60 @@ fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<Strin
     file.new_dataset_builder()
         .with_data(&arr1(&rdr.compile()[..]))
         .create(name.clone().as_str())
-        .with_context(|| format!("creating {name}"))?;
+        .map_err(|e| Error::Hdf5 {
+            name: name.to_string(),
+            msg: e.to_string(),
+        })?;
     Ok(name)
 }
 
 fn write_rdr_to_dataproducts(file: &File, rdr: &Rdr, src_path: &str) -> Result<()> {
+    let group_name = format!("Data_Products/{}", rdr.product.short_name);
+    if file.group(&group_name).is_err() {
+        file.create_group(&group_name).map_err(|e| Error::Hdf5 {
+            name: group_name,
+            msg: e.to_string(),
+        })?;
+    }
     let mut writer = DataProductsRefWriter::default();
     writer.write_ref(file, rdr, src_path)?;
+
     Ok(())
 }
 
 macro_rules! cstr {
     ($s:expr) => {
-        CString::new($s)?.as_ptr().cast::<c_char>()
+        CString::new($s)
+            .with_context(|| format!("creating c_str from {}", $s))?
+            .as_ptr()
+            .cast::<c_char>()
     };
 }
 
 macro_rules! chkid {
-    ($id:expr, $msg:expr) => {
+    ($id:expr, $name:expr, $msg:expr) => {
         if $id == H5I_INVALID_HID {
-            bail!($msg);
+            return Err(Error::Hdf5 {
+                name: $name,
+                msg: $msg,
+            });
         }
     };
 }
 
 macro_rules! chkerr {
-    ($id:expr, $msg:expr) => {
+    ($id:expr, $name:expr, $msg:expr) => {
         if $id < 0 {
-            bail!($msg);
+            return Err(Error::Hdf5 {
+                name: $name,
+                msg: $msg,
+            });
         }
     };
 }
 
-/// Helper that cleans up low-level h5 resource on drop
+/// Helper for writing the Data_Products region reference that cleans up low-level h5
+/// resource on drop
 #[derive(Default)]
 struct DataProductsRefWriter {
     src_group_id: hid_t,
@@ -165,6 +214,7 @@ impl DataProductsRefWriter {
         self.src_group_id = unsafe { H5Gopen(file.id(), cstr!(src_group_path), H5P_DEFAULT) };
         chkid!(
             self.src_group_id,
+            src_group_path.to_string(),
             format!("opening source group: {src_group_path}")
         );
 
@@ -172,14 +222,23 @@ impl DataProductsRefWriter {
             unsafe { H5Dopen2(file.id(), cstr!(src_path.to_string()), H5P_DEFAULT) };
         chkid!(
             self.src_dataset_id,
+            src_path.to_string(),
             format!("opening source dataset: {src_path}")
         );
 
         self.src_dataspace_id = unsafe { H5Dget_space(self.src_dataset_id) };
-        chkid!(self.src_dataspace_id, "getting source dataspace");
+        chkid!(
+            self.src_dataspace_id,
+            src_path.to_string(),
+            "getting source dataspace".to_string()
+        );
 
         let errid = unsafe { H5Sselect_all(self.src_dataspace_id) };
-        chkerr!(errid, "selecting dataspace");
+        chkerr!(
+            errid,
+            src_path.to_string(),
+            "selecting dataspace".to_string()
+        );
         let (_, src_dataset_name) = src_path
             .rsplit_once('/')
             .expect("dataset path to have 3 parts");
@@ -196,6 +255,7 @@ impl DataProductsRefWriter {
         };
         chkerr!(
             errid,
+            src_dataset_name.to_string(),
             format!("creating reference to source dataset {src_dataset_name}")
         );
 
@@ -204,13 +264,18 @@ impl DataProductsRefWriter {
             unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
         chkid!(
             self.dst_group_id,
+            dst_group_path.to_string(),
             format!("opening dest group: {dst_group_path}")
         );
 
         let dim = [1 as hsize_t];
         let maxdim = [1 as hsize_t];
         let space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), maxdim.as_ptr()) };
-        chkid!(space_id, "creating dest dataset dataspace");
+        chkid!(
+            space_id,
+            src_dataset_name.to_string(),
+            "creating dest dataset dataspace".to_string()
+        );
 
         // Use the index from the RawAP dataset for the product dataset
         let sidx = src_dataset_name
@@ -231,6 +296,7 @@ impl DataProductsRefWriter {
         };
         chkid!(
             self.dst_dataset_id,
+            dst_dataset_name.to_string(),
             format!("creating dest dataset with reference: {dst_dataset_name}")
         );
 
@@ -244,7 +310,11 @@ impl DataProductsRefWriter {
                 ref_id.as_ptr().cast(),
             )
         };
-        chkerr!(errid, "writing ref to dest dataset");
+        chkerr!(
+            errid,
+            dst_dataset_name,
+            "writing ref to dest dataset".to_string()
+        );
 
         Ok(())
     }
@@ -262,25 +332,31 @@ impl Drop for DataProductsRefWriter {
     }
 }
 
-fn write_aggr_group(file: &File, rdrs: &[Rdr]) -> Result<()> {
-    if rdrs.is_empty() {
-        return Ok(());
-    }
-    let group = file.create_group(&format!(
-        "/Data_Products/{0}/{0}_Aggr",
-        rdrs[0].product.short_name
-    ))?;
+fn write_aggr_group(file: &File, num_rdrs: usize, product: &ProductSpec) -> Result<()> {
+    let name = format!("/Data_Products/{0}/{0}_Aggr", product.short_name);
+    let group = file.create_group(&name).map_err(|e| Error::Hdf5 {
+        name: name.to_string(),
+        msg: e.to_string(),
+    })?;
 
     for (name, val) in [
         ("AggregateBeginningOrbitNumber", 0usize),
         ("AggregateEndingOrbitNumber", 0usize),
-        ("AggregateNumberGranules", rdrs.len()),
+        ("AggregateNumberGranules", num_rdrs),
     ] {
-        group
+        let attr = group
             .new_attr::<usize>()
             .shape([1, 1])
-            .create(name)?
-            .write_raw(&[val])?;
+            .create(name)
+            .map_err(|e| Error::Hdf5 {
+                name: format!("name={name} val={val}"),
+                msg: e.to_string(),
+            })?;
+
+        attr.write_raw(&[val]).map_err(|e| Error::Hdf5 {
+            name: format!("name={name} val={val}"),
+            msg: e.to_string(),
+        })?;
     }
 
     for (name, val) in [
@@ -291,14 +367,24 @@ fn write_aggr_group(file: &File, rdrs: &[Rdr]) -> Result<()> {
         ("AggregateEndingTime", ""),
         ("AggregateEndingGranuleID", ""),
     ] {
-        group
+        let attr = group
             .new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .with_context(|| format!("creating {name} attribute"))?
-            .write_raw(&[VarLenAscii::from_ascii(&val)
-                .with_context(|| format!("failed to create FixedAscii for {name}"))?])
-            .with_context(|| format!("writing {name} attribute"))?;
+            .map_err(|e| Error::Hdf5 {
+                name: format!("name={name} val={val}"),
+                msg: e.to_string(),
+            })?;
+
+        let ascii = VarLenAscii::from_ascii(&val).map_err(|e| Error::Hdf5 {
+            name: format!("name={name} val={val}"),
+            msg: e.to_string(),
+        })?;
+
+        attr.write_raw(&[ascii]).map_err(|e| Error::Hdf5 {
+            name: format!("name={name} val={val}"),
+            msg: e.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -325,7 +411,14 @@ mod tests {
 
             let dt = "2000-01-01T12:13:14Z".parse::<DateTime<Utc>>().unwrap();
             let fname = filename(
-                &config,
+                &SatSpec {
+                    id: "npp".to_string(),
+                    short_name: "short_name".to_string(),
+                    base_time: 0,
+                    mission: "mission".to_string(),
+                },
+                "origin",
+                "mode",
                 &Rdr {
                     product: primary.clone(),
                     granule_time: dt.timestamp_micros() as u64,

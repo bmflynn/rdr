@@ -70,7 +70,15 @@ pub fn create(
                 rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
             );
 
-            let fpath = write_hdf5(&config, &rdr, &packed, &dest).context("writing h5")?;
+            let fpath = write_hdf5(
+                &config.satellite,
+                &config.origin,
+                &config.mode,
+                &rdr,
+                &packed,
+                &dest,
+            )
+            .context("writing h5")?;
             info!("wrote {fpath:?}");
         }
     }

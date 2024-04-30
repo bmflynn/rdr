@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.82"
-ccsds = { version = "0.1.0-beta.5", path = "../../ccsds-rs" }
 clap = { version = "4.5.4", features = ["derive"] }
+ccsds = { path = "../../ccsds-rs" }
 rdr = { version = "0.1.0", path = "../rdr" }
 tempfile = "3.10.1"
 tracing = "0.1.40"

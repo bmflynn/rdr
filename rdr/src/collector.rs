@@ -1,11 +1,7 @@
-use tracing::{debug, trace};
-
-use std::{
-    cmp,
-    collections::{HashMap, VecDeque},
-};
+use std::collections::{HashMap, VecDeque};
 
 use ccsds::{Apid, Packet, PacketGroup};
+use tracing::trace;
 
 use crate::{
     config::{ProductSpec, SatSpec},
@@ -27,6 +23,7 @@ pub struct Collector {
 }
 
 impl Collector {
+    #[must_use]
     pub fn new(sat: SatSpec, products: &[ProductSpec]) -> Self {
         let mut collector = Collector {
             sat,
