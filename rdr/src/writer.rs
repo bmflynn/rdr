@@ -1,34 +1,22 @@
 use std::{
-    ffi::{c_char, c_uchar, c_ulonglong, c_void, CString},
-    io::stdout,
-    os::{
-        fd::{AsFd, AsRawFd},
-        unix::ffi::OsStrExt,
-    },
+    ffi::{c_char, CString},
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use hdf5::{types::VarLenAscii, File, Group, Selection};
+use hdf5::{types::VarLenAscii, File};
 use hdf5_sys::{
     h5::hsize_t,
-    h5d::{H5Dclose, H5Dcreate1, H5Dcreate2, H5Dget_space, H5Dopen2, H5Dwrite},
-    h5e::H5Eprint,
-    h5f::{H5Fclose, H5Fopen, H5F_ACC_RDWR},
+    h5d::{H5Dclose, H5Dcreate2, H5Dget_space, H5Dopen2, H5Dwrite},
     h5g::{H5Gclose, H5Gopen},
     h5i::{hid_t, H5I_INVALID_HID},
     h5p::H5P_DEFAULT,
-    h5r::{
-        hdset_reg_ref_t,
-        H5R_type_t::{self, H5R_DATASET_REGION},
-        H5Rcreate,
-    },
-    h5s::{H5Sclose, H5Screate, H5Screate_simple, H5Sselect_all, H5S_ALL, H5S_UNLIMITED},
-    h5t::{H5T_class_t::H5T_REFERENCE, H5T_STD_REF_DSETREG},
+    h5r::{hdset_reg_ref_t, H5R_type_t::H5R_DATASET_REGION, H5Rcreate},
+    h5s::{H5Sclose, H5Screate_simple, H5Sselect_all, H5S_ALL},
+    h5t::H5T_STD_REF_DSETREG,
 };
 use ndarray::arr1;
-use tracing::trace;
 
 use crate::{config::Config, rdr::Rdr};
 
@@ -66,25 +54,27 @@ pub fn write_hdf5(config: &Config, rdr: &Rdr, packed: &[Rdr], dest: &Path) -> Re
     let created = Utc::now();
     let fpath = dest.join(filename(config, rdr, &created));
 
-    {
-        let mut file = File::create(&fpath)?;
+    let mut file = File::create(&fpath)?;
 
-        set_global_attrs(&mut file, config, &created)?;
+    set_global_attrs(&mut file, config, &created)?;
 
-        let all_data_group = file.create_group("All_Data")?;
-        write_alldata_group(&all_data_group, &[rdr.clone()])?;
-        write_alldata_group(&all_data_group, packed)?;
+    file.create_group("All_Data")?;
+    file.create_group("Data_Products")?;
 
-        file.create_group(&format!("Data_Products/{}", rdr.product.short_name))?;
-        if !packed.is_empty() {
-            file.create_group(&format!("Data_Products/{}", packed[0].product.short_name))?;
+    file.create_group(&format!("Data_Products/{}", rdr.product.short_name))?;
+    write_aggr_group(&file, &[rdr.clone()])?;
+    let path = write_rdr_to_alldata(&file, 0, rdr)?;
+    write_rdr_to_dataproducts(&file, rdr, &path)?;
+
+    for (idx, rdr) in packed.iter().enumerate() {
+        let group_name = &format!("Data_Products/{}", rdr.product.short_name);
+        if file.group(group_name).is_err() {
+            file.create_group(group_name)?;
+            write_aggr_group(&file, packed)?;
         }
-
-        file.close()?;
+        let path = write_rdr_to_alldata(&file, idx, rdr)?;
+        write_rdr_to_dataproducts(&file, rdr, &path)?;
     }
-
-    write_dataproducts_group(&fpath, &[rdr.clone()])?;
-    // write_dataproducts_group(&fpath, packed)?;
 
     Ok(fpath)
 }
@@ -117,20 +107,21 @@ fn set_global_attrs(file: &mut File, config: &Config, created: &DateTime<Utc>) -
     Ok(())
 }
 
-fn write_alldata_group(group: &Group, rdrs: &[Rdr]) -> Result<()> {
-    if rdrs.is_empty() {
-        return Ok(());
-    }
-    let subgroup = group.create_group(&format!("{}_All", rdrs[0].product.short_name))?;
-    for (idx, rdr) in rdrs.iter().enumerate() {
-        let name = format!("RawApplicationPackets_{idx}");
-        subgroup
-            .new_dataset_builder()
-            .with_data(&arr1(&rdr.compile()[..]))
-            .create(name.clone().as_str())
-            .with_context(|| format!("creating {name}"))?;
-    }
+fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<String> {
+    let name = format!(
+        "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
+        rdr.product.short_name
+    );
+    file.new_dataset_builder()
+        .with_data(&arr1(&rdr.compile()[..]))
+        .create(name.clone().as_str())
+        .with_context(|| format!("creating {name}"))?;
+    Ok(name)
+}
 
+fn write_rdr_to_dataproducts(file: &File, rdr: &Rdr, src_path: &str) -> Result<()> {
+    let mut writer = DataProductsRefWriter::default();
+    writer.write_ref(file, rdr, src_path)?;
     Ok(())
 }
 
@@ -140,115 +131,176 @@ macro_rules! cstr {
     };
 }
 
-#[allow(clippy::too_many_lines)]
-fn write_dataproducts_group(fpath: &Path, rdrs: &[Rdr]) -> Result<()> {
+macro_rules! chkid {
+    ($id:expr, $msg:expr) => {
+        if $id == H5I_INVALID_HID {
+            bail!($msg);
+        }
+    };
+}
+
+macro_rules! chkerr {
+    ($id:expr, $msg:expr) => {
+        if $id < 0 {
+            bail!($msg);
+        }
+    };
+}
+
+/// Helper that cleans up low-level h5 resource on drop
+#[derive(Default)]
+struct DataProductsRefWriter {
+    src_group_id: hid_t,
+    src_dataset_id: hid_t,
+    src_dataspace_id: hid_t,
+    dst_group_id: hid_t,
+    dst_dataset_id: hid_t,
+}
+
+impl DataProductsRefWriter {
+    fn write_ref(&mut self, file: &File, rdr: &Rdr, src_path: &str) -> Result<()> {
+        let (src_group_path, _) = src_path
+            .rsplit_once('/')
+            .expect("dataset path to have 3 parts");
+        self.src_group_id = unsafe { H5Gopen(file.id(), cstr!(src_group_path), H5P_DEFAULT) };
+        chkid!(
+            self.src_group_id,
+            format!("opening source group: {src_group_path}")
+        );
+
+        self.src_dataset_id =
+            unsafe { H5Dopen2(file.id(), cstr!(src_path.to_string()), H5P_DEFAULT) };
+        chkid!(
+            self.src_dataset_id,
+            format!("opening source dataset: {src_path}")
+        );
+
+        self.src_dataspace_id = unsafe { H5Dget_space(self.src_dataset_id) };
+        chkid!(self.src_dataspace_id, "getting source dataspace");
+
+        let errid = unsafe { H5Sselect_all(self.src_dataspace_id) };
+        chkerr!(errid, "selecting dataspace");
+        let (_, src_dataset_name) = src_path
+            .rsplit_once('/')
+            .expect("dataset path to have 3 parts");
+
+        let mut ref_id: hdset_reg_ref_t = [0; 12];
+        let errid = unsafe {
+            H5Rcreate(
+                ref_id.as_mut_ptr().cast(),
+                self.src_group_id,
+                cstr!(src_dataset_name),
+                H5R_DATASET_REGION,
+                self.src_dataspace_id,
+            )
+        };
+        chkerr!(
+            errid,
+            format!("creating reference to source dataset {src_dataset_name}")
+        );
+
+        let dst_group_path = format!("/Data_Products/{0}", rdr.product.short_name,);
+        self.dst_group_id =
+            unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
+        chkid!(
+            self.dst_group_id,
+            format!("opening dest group: {dst_group_path}")
+        );
+
+        let dim = [1 as hsize_t];
+        let maxdim = [1 as hsize_t];
+        let space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), maxdim.as_ptr()) };
+        chkid!(space_id, "creating dest dataset dataspace");
+
+        // Use the index from the RawAP dataset for the product dataset
+        let sidx = src_dataset_name
+            .rsplit('_')
+            .next()
+            .expect("dataset name to end with _{idx}");
+        let dst_dataset_name = format!("{}_Gran_{sidx}", rdr.product.short_name,);
+        self.dst_dataset_id = unsafe {
+            H5Dcreate2(
+                self.dst_group_id,
+                cstr!(dst_dataset_name.clone()),
+                *H5T_STD_REF_DSETREG,
+                space_id,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+            )
+        };
+        chkid!(
+            self.dst_dataset_id,
+            format!("creating dest dataset with reference: {dst_dataset_name}")
+        );
+
+        let errid = unsafe {
+            H5Dwrite(
+                self.dst_dataset_id,
+                *H5T_STD_REF_DSETREG,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                ref_id.as_ptr().cast(),
+            )
+        };
+        chkerr!(errid, "writing ref to dest dataset");
+
+        Ok(())
+    }
+}
+
+impl Drop for DataProductsRefWriter {
+    fn drop(&mut self) {
+        unsafe {
+            H5Gclose(self.src_group_id);
+            H5Sclose(self.src_dataspace_id);
+            H5Dclose(self.src_dataset_id);
+            H5Gclose(self.dst_group_id);
+            H5Dclose(self.dst_dataset_id);
+        }
+    }
+}
+
+fn write_aggr_group(file: &File, rdrs: &[Rdr]) -> Result<()> {
     if rdrs.is_empty() {
         return Ok(());
     }
+    let group = file.create_group(&format!(
+        "/Data_Products/{0}/{0}_Aggr",
+        rdrs[0].product.short_name
+    ))?;
 
-    let file_id = unsafe {
-        let id = H5Fopen(
-            cstr!(fpath.as_os_str().as_bytes()),
-            H5F_ACC_RDWR,
-            H5P_DEFAULT,
-        );
-        if id == H5I_INVALID_HID {
-            bail!("failed to open file {fpath:?}: {id}");
-        }
-        id
-    };
-    trace!("opened file {file_id}");
-
-    let src_grp_id = unsafe {
-        let grp_name = format!("/All_Data/{}_All", rdrs[0].product.short_name);
-        let id = H5Gopen(
-            file_id,
-            CString::new(grp_name.clone())?.as_ptr().cast::<c_char>(),
-            H5P_DEFAULT,
-        );
-        if id == H5I_INVALID_HID {
-            bail!("failed to open source group {grp_name}");
-        }
-        id
-    };
-    trace!("opened source group {src_grp_id}");
-
-    let idx = 0;
-    let rdr = &rdrs[0];
-
-    let src_path = format!(
-        "/All_Data/{}_All/RawApplicationPackets_{}",
-        rdr.product.short_name, idx
-    );
-    let mut failed = false;
-    unsafe {
-        // 1. Create or open the dataset that contains the region
-        let src_dataset_id = H5Dopen2(file_id, cstr!(src_path.clone()), H5P_DEFAULT);
-        trace!(
-            "open source dataset {src_dataset_id}: {}",
-            src_dataset_id == H5I_INVALID_HID
-        );
-        failed |= src_dataset_id == H5I_INVALID_HID;
-
-        // 2. Get the dataspace for the dataset
-        let src_space_id = H5Dget_space(src_dataset_id);
-        trace!(
-            "source space: {src_space_id}: {}",
-            src_space_id == H5I_INVALID_HID
-        );
-        failed |= src_space_id == H5I_INVALID_HID;
-
-        // 3. Define a selection that specifies the region
-        let select_err = H5Sselect_all(src_space_id);
-        trace!("source space selection {select_err}: {}", select_err < 0);
-        failed |= select_err < 0;
-
-        // 4. Create the reference
-        let mut ref_id: hdset_reg_ref_t = [0; 12];
-        let ref_err = H5Rcreate(
-            ref_id.as_mut_ptr().cast(),
-            src_grp_id,
-            cstr!(format!("RawApplicationPackets_{idx}")),
-            H5R_DATASET_REGION,
-            src_space_id,
-        );
-        H5Eprint(ref_err as hid_t, stdout().as_fd().as_raw_fd() as *mut _);
-        trace!("create source reference {ref_err}: {}", ref_err < 0);
-        failed |= ref_err < 0;
-
-        H5Sclose(src_space_id);
-        H5Dclose(src_dataset_id);
-
-        if failed {
-            bail!("failed to create source dataset reference");
-        }
+    for (name, val) in [
+        ("AggregateBeginningOrbitNumber", 0usize),
+        ("AggregateEndingOrbitNumber", 0usize),
+        ("AggregateNumberGranules", rdrs.len()),
+    ] {
+        group
+            .new_attr::<usize>()
+            .shape([1, 1])
+            .create(name)?
+            .write_raw(&[val])?;
     }
 
-    unsafe {
-        if H5Gclose(src_grp_id) < 0 {
-            bail!("failed to close src group");
-        }
-        if H5Fclose(file_id) < 0 {
-            bail!("failed to close h5 file");
-        }
+    for (name, val) in [
+        ("AggregateBeginningDate", ""),
+        ("AggregateBeginningTime", ""),
+        ("AggregateBeginningGranuleID", ""),
+        ("AggregateEndingDate", ""),
+        ("AggregateEndingTime", ""),
+        ("AggregateEndingGranuleID", ""),
+    ] {
+        group
+            .new_attr::<VarLenAscii>()
+            .shape([1, 1])
+            .create(name)
+            .with_context(|| format!("creating {name} attribute"))?
+            .write_raw(&[VarLenAscii::from_ascii(&val)
+                .with_context(|| format!("failed to create FixedAscii for {name}"))?])
+            .with_context(|| format!("writing {name} attribute"))?;
     }
-
     Ok(())
-}
-
-/*
- {'AggregateBeginningDate': array([[b'20170927']], dtype='|S8'),
- 'AggregateBeginningGranuleID': array([[b'NPP001871926926']], dtype='|S15'),
- 'AggregateBeginningOrbitNumber': array([[0]], dtype=uint64),
- 'AggregateBeginningTime': array([[b'135809.600000Z']], dtype='|S14'),
- 'AggregateEndingDate': array([[b'20170927']], dtype='|S8'),
- 'AggregateEndingGranuleID': array([[b'NPP001871926926']], dtype='|S15'),
- 'AggregateEndingOrbitNumber': array([[0]], dtype=uint64),
- 'AggregateEndingTime': array([[b'135934.950000Z']], dtype='|S14'),
- 'AggregateNumberGranules': array([[1]], dtype=uint64)}
-*/
-fn set_attr_group_attrs() -> Result<()> {
-    todo!();
 }
 
 #[cfg(test)]

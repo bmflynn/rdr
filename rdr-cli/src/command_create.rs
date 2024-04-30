@@ -1,3 +1,5 @@
+use anyhow::{bail, Context, Result};
+use ccsds::read_packet_groups;
 use rdr::{
     collector::{Collector, PacketTimeIter},
     config::{get_default, Config},
@@ -5,8 +7,6 @@ use rdr::{
     time::time_decoder,
     writer::write_hdf5,
 };
-use anyhow::{bail, Context, Result};
-use ccsds::read_packet_groups;
 use std::{
     fs::{create_dir, File},
     path::PathBuf,
