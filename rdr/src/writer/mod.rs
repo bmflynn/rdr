@@ -1,21 +1,10 @@
-use std::{
-    ffi::{c_char, CString},
-    path::{Path, PathBuf},
-};
+mod hdfc;
+
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use hdf5::{types::VarLenAscii, File};
-use hdf5_sys::{
-    h5::hsize_t,
-    h5d::{H5Dclose, H5Dcreate2, H5Dget_space, H5Dopen2, H5Dwrite},
-    h5g::{H5Gclose, H5Gopen},
-    h5i::{hid_t, H5I_INVALID_HID},
-    h5p::H5P_DEFAULT,
-    h5r::{hdset_reg_ref_t, H5R_type_t::H5R_DATASET_REGION, H5Rcreate},
-    h5s::{H5Sclose, H5Screate_simple, H5Sselect_all, H5S_ALL},
-    h5t::H5T_STD_REF_DSETREG,
-};
 use ndarray::arr1;
 
 use crate::{
@@ -45,7 +34,7 @@ pub fn write_hdf5(
 
     let mut file = File::create(&fpath).with_context(|| format!("opening {fpath:?}"))?;
 
-    set_global_attrs(&config, &mut file, &created).context("setting global attrs")?;
+    set_global_attrs(config, &mut file, &created).context("setting global attrs")?;
 
     // Handle the primary RDR
     let path = write_rdr_to_alldata(&file, 0, rdr)?;
@@ -159,178 +148,36 @@ fn write_rdr_to_dataproducts(file: &File, rdr: &Rdr, src_path: &str) -> Result<(
             msg: e.to_string(),
         })?;
     }
-    let mut writer = DataProductsRefWriter::default();
+    let mut writer = hdfc::DataProductsRefWriter::default();
     writer.write_ref(file, rdr, src_path)?;
-
+    /*
+                "Beginning_Date": self._format_date_attr(gran_iet),
+                "Beginning_Time": self._format_time_attr(gran_iet),
+                "Ending_Date": self._format_date_attr(gran_end_iet),
+                "Ending_Time": self._format_time_attr(gran_end_iet),
+                "N_Beginning_Orbit_Number": np.uint64(self._orbit_num),
+                "N_Beginning_Time_IET": np.uint64(gran_iet),
+                "N_Creation_Date": self._format_date_attr(creation_time),
+                "N_Creation_Time": self._format_time_attr(creation_time),
+                "N_Ending_Time_IET": np.uint64(gran_end_iet),
+                "N_Granule_ID": gran_id,
+                "N_Granule_Status": "N/A",
+                "N_Granule_Version": gran_ver,
+                "N_IDPS_Mode": self._domain,
+                "N_JPSS_Document_Ref": rdr_type.document,
+                "N_LEOA_Flag": "Off",
+                "N_Packet_Type": [a.name for a in blob_info.apids],
+                "N_Packet_Type_Count": [
+                    np.uint64(a.pkts_received) for a in blob_info.apids
+                ],
+                "N_Percent_Missing_Data": np.float32(
+                    self._calc_percent_missing(blob_info)
+                ),
+                "N_Primary_Label": "Primary",  # TODO: find out what this is
+                "N_Reference_ID": ":".join([rdr_type.short_name, gran_id, gran_ver]),
+                "N_Software_Version": self._software_ver,
+    */
     Ok(())
-}
-
-macro_rules! cstr {
-    ($s:expr) => {
-        CString::new($s)
-            .with_context(|| format!("creating c_str from {}", $s))?
-            .as_ptr()
-            .cast::<c_char>()
-    };
-}
-
-macro_rules! chkid {
-    ($id:expr, $name:expr, $msg:expr) => {
-        if $id == H5I_INVALID_HID {
-            return Err(Error::Hdf5 {
-                name: $name,
-                msg: $msg,
-            });
-        }
-    };
-}
-
-macro_rules! chkerr {
-    ($id:expr, $name:expr, $msg:expr) => {
-        if $id < 0 {
-            return Err(Error::Hdf5 {
-                name: $name,
-                msg: $msg,
-            });
-        }
-    };
-}
-
-/// Helper for writing the Data_Products region reference that cleans up low-level h5
-/// resource on drop
-#[derive(Default)]
-struct DataProductsRefWriter {
-    src_group_id: hid_t,
-    src_dataset_id: hid_t,
-    src_dataspace_id: hid_t,
-    dst_group_id: hid_t,
-    dst_dataset_id: hid_t,
-}
-
-impl DataProductsRefWriter {
-    fn write_ref(&mut self, file: &File, rdr: &Rdr, src_path: &str) -> Result<()> {
-        let (src_group_path, _) = src_path
-            .rsplit_once('/')
-            .expect("dataset path to have 3 parts");
-        self.src_group_id = unsafe { H5Gopen(file.id(), cstr!(src_group_path), H5P_DEFAULT) };
-        chkid!(
-            self.src_group_id,
-            src_group_path.to_string(),
-            format!("opening source group: {src_group_path}")
-        );
-
-        self.src_dataset_id =
-            unsafe { H5Dopen2(file.id(), cstr!(src_path.to_string()), H5P_DEFAULT) };
-        chkid!(
-            self.src_dataset_id,
-            src_path.to_string(),
-            format!("opening source dataset: {src_path}")
-        );
-
-        self.src_dataspace_id = unsafe { H5Dget_space(self.src_dataset_id) };
-        chkid!(
-            self.src_dataspace_id,
-            src_path.to_string(),
-            "getting source dataspace".to_string()
-        );
-
-        let errid = unsafe { H5Sselect_all(self.src_dataspace_id) };
-        chkerr!(
-            errid,
-            src_path.to_string(),
-            "selecting dataspace".to_string()
-        );
-        let (_, src_dataset_name) = src_path
-            .rsplit_once('/')
-            .expect("dataset path to have 3 parts");
-
-        let mut ref_id: hdset_reg_ref_t = [0; 12];
-        let errid = unsafe {
-            H5Rcreate(
-                ref_id.as_mut_ptr().cast(),
-                self.src_group_id,
-                cstr!(src_dataset_name),
-                H5R_DATASET_REGION,
-                self.src_dataspace_id,
-            )
-        };
-        chkerr!(
-            errid,
-            src_dataset_name.to_string(),
-            format!("creating reference to source dataset {src_dataset_name}")
-        );
-
-        let dst_group_path = format!("/Data_Products/{0}", rdr.product.short_name,);
-        self.dst_group_id =
-            unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
-        chkid!(
-            self.dst_group_id,
-            dst_group_path.to_string(),
-            format!("opening dest group: {dst_group_path}")
-        );
-
-        let dim = [1 as hsize_t];
-        let maxdim = [1 as hsize_t];
-        let space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), maxdim.as_ptr()) };
-        chkid!(
-            space_id,
-            src_dataset_name.to_string(),
-            "creating dest dataset dataspace".to_string()
-        );
-
-        // Use the index from the RawAP dataset for the product dataset
-        let sidx = src_dataset_name
-            .rsplit('_')
-            .next()
-            .expect("dataset name to end with _{idx}");
-        let dst_dataset_name = format!("{}_Gran_{sidx}", rdr.product.short_name,);
-        self.dst_dataset_id = unsafe {
-            H5Dcreate2(
-                self.dst_group_id,
-                cstr!(dst_dataset_name.clone()),
-                *H5T_STD_REF_DSETREG,
-                space_id,
-                H5P_DEFAULT,
-                H5P_DEFAULT,
-                H5P_DEFAULT,
-            )
-        };
-        chkid!(
-            self.dst_dataset_id,
-            dst_dataset_name.to_string(),
-            format!("creating dest dataset with reference: {dst_dataset_name}")
-        );
-
-        let errid = unsafe {
-            H5Dwrite(
-                self.dst_dataset_id,
-                *H5T_STD_REF_DSETREG,
-                H5S_ALL,
-                H5S_ALL,
-                H5P_DEFAULT,
-                ref_id.as_ptr().cast(),
-            )
-        };
-        chkerr!(
-            errid,
-            dst_dataset_name,
-            "writing ref to dest dataset".to_string()
-        );
-
-        Ok(())
-    }
-}
-
-impl Drop for DataProductsRefWriter {
-    fn drop(&mut self) {
-        unsafe {
-            H5Gclose(self.src_group_id);
-            H5Sclose(self.src_dataspace_id);
-            H5Dclose(self.src_dataset_id);
-            H5Gclose(self.dst_group_id);
-            H5Dclose(self.dst_dataset_id);
-        }
-    }
 }
 
 fn write_aggr_group(file: &File, num_rdrs: usize, product: &ProductSpec) -> Result<()> {
