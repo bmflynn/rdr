@@ -1,10 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use ccsds::{Apid, Packet, PacketGroup};
 use tracing::trace;
 
 use crate::{
-    config::{ProductSpec, SatSpec},
+    config::{ProductSpec, RdrSpec, SatSpec},
     rdr::Rdr,
     time::TimeFcn,
 };
@@ -15,7 +15,13 @@ use crate::{
 /// final RDR.
 pub struct Collector {
     sat: SatSpec,
-    specs: HashMap<String, ProductSpec>,
+    // Maps the promary RDR products ids to the ids of products they're packed with
+    primary_ids: HashMap<String, Vec<String>>,
+    // ids of all packed products we're collecting
+    packed_ids: HashSet<String>,
+    // Maps product_id to spec
+    products: HashMap<String, ProductSpec>,
+    // Maps apids to product_id
     ids: HashMap<Apid, String>,
 
     primary: HashMap<(String, u64), Rdr>,
@@ -24,10 +30,12 @@ pub struct Collector {
 
 impl Collector {
     #[must_use]
-    pub fn new(sat: SatSpec, products: &[ProductSpec]) -> Self {
+    pub fn new(sat: SatSpec, rdrs: &[RdrSpec], products: &[ProductSpec]) -> Self {
         let mut collector = Collector {
             sat,
-            specs: HashMap::default(),
+            primary_ids: HashMap::default(),
+            packed_ids: HashSet::default(),
+            products: HashMap::default(),
             ids: HashMap::default(),
             primary: HashMap::default(),
             packed: HashMap::default(),
@@ -35,10 +43,19 @@ impl Collector {
 
         for product in products {
             collector
-                .specs
+                .products
                 .insert(product.product_id.clone(), product.clone());
             for apid in &product.apids {
                 collector.ids.insert(apid.num, product.product_id.clone());
+            }
+        }
+
+        for rdr in rdrs {
+            collector
+                .primary_ids
+                .insert(rdr.product.clone(), rdr.packed_with.clone());
+            for prod_id in &rdr.packed_with {
+                collector.packed_ids.insert(prod_id.clone());
             }
         }
 
@@ -61,8 +78,8 @@ impl Collector {
     /// the start of the primary granule start and less than the primary granule end.
     fn overlapping_packed_granules(&self, product: &ProductSpec, rdr: &Rdr) -> Vec<Rdr> {
         let mut packed = Vec::default();
-        for packed_id in &product.packed_with {
-            let packed_product = self.specs.get(packed_id).expect("spec for existing id");
+        for packed_id in &rdr.packed_with {
+            let packed_product = self.products.get(packed_id).expect("spec for existing id");
             for (key, packed_rdr) in &self.packed {
                 let packed_gran_start = i64::try_from(key.1).unwrap();
                 let primary_gran_start = i64::try_from(rdr.granule_time).unwrap();
@@ -83,12 +100,15 @@ impl Collector {
         if !self.ids.contains_key(&pkt.header.apid) {
             return None; // apid has no configured product
         }
+        // The product id and product for the packets' apid
         let prod_id = &self.ids[&pkt.header.apid];
-        let product = self.specs.get(prod_id).expect("spec for existing id");
+        let product = self.products.get(prod_id).expect("spec for existing id");
         let (gran_utc, gran_iet) = self.gran_times(pkt_utc, pkt_iet, product);
 
         let key = (prod_id.clone(), gran_iet);
-        if product.primary {
+
+        // If this product is for a primary product RDR add it to the primary collection
+        if let Some(packed_ids) = self.primary_ids.get(prod_id) {
             {
                 let rdr = self.primary.entry(key).or_insert_with(|| {
                     trace!(
@@ -96,7 +116,7 @@ impl Collector {
                         product.product_id,
                         gran_iet
                     );
-                    Rdr::new(gran_utc, gran_iet, &self.sat, product)
+                    Rdr::new(gran_utc, gran_iet, &self.sat, product, packed_ids.clone())
                 });
                 rdr.add_packet(gran_iet, pkt, product);
             }
@@ -120,7 +140,7 @@ impl Collector {
                     product.product_id,
                     gran_iet
                 );
-                Rdr::new(gran_utc, gran_iet, &self.sat, product)
+                Rdr::new(gran_utc, gran_iet, &self.sat, product, vec![])
             });
             rdr.add_packet(gran_iet, pkt, product);
             None
@@ -133,7 +153,7 @@ impl Collector {
 
         let mut finished = Vec::default();
         for key in &keys {
-            let product = self.specs.get(&key.0).unwrap(); // we have a primary rdr, so this product exists
+            let product = self.products.get(&key.0).unwrap(); // we have a primary rdr, so this product exists
             let primary = self.primary.remove(key).unwrap(); // already checked it exists
             let packed = self.overlapping_packed_granules(product, &primary);
             finished.push((primary, packed));

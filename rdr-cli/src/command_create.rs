@@ -54,7 +54,7 @@ pub fn create(
     let decode_iet =
         time_decoder(leap_seconds.as_deref()).context("initializing leap-seconds db")?;
 
-    let mut collector = Collector::new(config.satellite.clone(), &config.products);
+    let mut collector = Collector::new(config.satellite.clone(), &config.rdrs, &config.products);
 
     let dest = PathBuf::from("output");
     if !dest.exists() {
@@ -70,15 +70,7 @@ pub fn create(
                 rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
             );
 
-            let fpath = write_hdf5(
-                &config.satellite,
-                &config.origin,
-                &config.mode,
-                &rdr,
-                &packed,
-                &dest,
-            )
-            .context("writing h5")?;
+            let fpath = write_hdf5(&config, &rdr, &packed, &dest).context("writing h5")?;
             info!("wrote {fpath:?}");
         }
     }

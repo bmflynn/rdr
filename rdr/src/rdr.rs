@@ -1,12 +1,13 @@
 use anyhow::Context;
 use ccsds::{Apid, Packet};
-use std::{collections::{HashMap, VecDeque}};
+use std::collections::{HashMap, VecDeque};
 
 use crate::config::{ProductSpec, SatSpec};
 
 #[derive(Clone)]
 pub struct Rdr {
     pub product: ProductSpec,
+    pub packed_with: Vec<String>,
     pub granule_time: u64,
     pub granule_utc: u64,
     pub header: StaticHeader,
@@ -16,9 +17,16 @@ pub struct Rdr {
 }
 
 impl Rdr {
-    pub fn new(gran_utc: u64, gran_iet: u64, sat: &SatSpec, product: &ProductSpec) -> Self {
+    pub fn new(
+        gran_utc: u64,
+        gran_iet: u64,
+        sat: &SatSpec,
+        product: &ProductSpec,
+        packed_with: Vec<String>,
+    ) -> Self {
         let mut rdr = Self {
             product: product.clone(),
+            packed_with,
             granule_time: gran_iet,
             granule_utc: gran_utc,
             header: StaticHeader::new(gran_iet, sat, product),

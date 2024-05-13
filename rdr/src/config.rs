@@ -30,14 +30,12 @@ pub struct ProductSpec {
     pub sensor: String,
     pub short_name: String,
     pub type_id: String,
-    pub primary: bool,
     pub gran_len: u64,
     pub apids: Vec<ApidSpec>,
-    #[serde(default)]
-    pub packed_with: Vec<String>,
 }
 
 impl ProductSpec {
+    #[must_use]
     pub fn get_apid(&self, apid: Apid) -> Option<ApidSpec> {
         // FIXME: make this more efficient
         for spec in &self.apids {
@@ -49,13 +47,22 @@ impl ProductSpec {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RdrSpec {
+    pub product: String,
+    #[serde(default)]
+    pub packed_with: Vec<String>,
+}
+
 // Per-satellite RDR configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub origin: String,
     pub mode: String,
+    pub distributor: String,
     pub satellite: SatSpec,
     pub products: Vec<ProductSpec>,
+    pub rdrs: Vec<RdrSpec>,
 }
 
 impl Config {
@@ -65,12 +72,12 @@ impl Config {
         for product in &self.products {
             product_ids.insert(product.product_id.clone());
         }
-        for product in &self.products {
-            for packed_id in &product.packed_with {
+        for rdr in &self.rdrs {
+            for packed_id in &rdr.packed_with {
                 if !product_ids.contains(packed_id) {
                     bail!(
                         "product {} has invalid packed product {}",
-                        product.product_id,
+                        rdr.product,
                         packed_id
                     );
                 }

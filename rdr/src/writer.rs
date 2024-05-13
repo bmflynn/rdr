@@ -19,7 +19,7 @@ use hdf5_sys::{
 use ndarray::arr1;
 
 use crate::{
-    config::{ProductSpec, SatSpec},
+    config::{Config, ProductSpec, SatSpec},
     prelude::*,
     rdr::Rdr,
 };
@@ -29,19 +29,23 @@ use crate::{
 /// # Errors
 /// All errors creating or wri
 pub fn write_hdf5(
-    sat: &SatSpec,
-    origin: &str,
-    mode: &str,
+    config: &Config,
     rdr: &Rdr,
     packed: &[Rdr],
     dest: &Path,
 ) -> crate::error::Result<PathBuf> {
     let created = Utc::now();
-    let fpath = dest.join(filename(sat, origin, mode, rdr, &created));
+    let fpath = dest.join(filename(
+        &config.satellite,
+        &config.origin,
+        &config.mode,
+        rdr,
+        &created,
+    ));
 
     let mut file = File::create(&fpath).with_context(|| format!("opening {fpath:?}"))?;
 
-    set_global_attrs(sat, origin, &mut file, &created).context("setting global attrs")?;
+    set_global_attrs(&config, &mut file, &created).context("setting global attrs")?;
 
     // Handle the primary RDR
     let path = write_rdr_to_alldata(&file, 0, rdr)?;
@@ -49,11 +53,13 @@ pub fn write_hdf5(
     write_aggr_group(&file, 1, &rdr.product)?;
 
     // Handle the packed products
-    for (idx, rdr) in packed.iter().enumerate() {
-        let path = write_rdr_to_alldata(&file, idx, rdr)?;
-        write_rdr_to_dataproducts(&file, rdr, &path)?;
+    if !packed.is_empty() {
+        for (idx, rdr) in packed.iter().enumerate() {
+            let path = write_rdr_to_alldata(&file, idx, rdr)?;
+            write_rdr_to_dataproducts(&file, rdr, &path)?;
+        }
+        write_aggr_group(&file, 1, &packed[0].product)?;
     }
-    write_aggr_group(&file, packed.len(), &packed[0].product)?;
 
     Ok(fpath)
 }
@@ -62,7 +68,7 @@ pub fn write_hdf5(
 fn filename(sat: &SatSpec, origin: &str, mode: &str, rdr: &Rdr, created: &DateTime<Utc>) -> String {
     let mut product_ids = [
         vec![rdr.product.product_id.clone()],
-        rdr.product.packed_with.clone(),
+        rdr.packed_with.clone(),
     ]
     .concat();
     product_ids.sort();
@@ -85,17 +91,12 @@ fn filename(sat: &SatSpec, origin: &str, mode: &str, rdr: &Rdr, created: &DateTi
     )
 }
 
-fn set_global_attrs(
-    sat: &SatSpec,
-    origin: &str,
-    file: &mut File,
-    created: &DateTime<Utc>,
-) -> Result<()> {
+fn set_global_attrs(config: &Config, file: &mut File, created: &DateTime<Utc>) -> Result<()> {
     for (name, val) in [
-        ("Distributor", "arch"),
-        ("Mission_Name", &sat.mission),
-        ("Platform_Short_Name", &sat.short_name),
-        ("N_Dataset_Source", origin),
+        ("Distributor", &config.distributor),
+        ("Mission_Name", &config.satellite.mission),
+        ("Platform_Short_Name", &config.satellite.short_name),
+        ("N_Dataset_Source", &config.origin),
         ("N_HDF_Creation_Date", &created.format("%Y%m%d").to_string()),
         (
             "N_HDF_Creation_Time",
@@ -401,6 +402,42 @@ mod tests {
         use super::*;
 
         #[test]
+        fn packed_rdrs() {
+            let config = get_default("npp").unwrap();
+            let primary = config
+                .products
+                .iter()
+                .filter(|p| p.product_id == "RVIRS")
+                .collect::<Vec<_>>()[0];
+
+            let dt = "2000-01-01T12:13:14Z".parse::<DateTime<Utc>>().unwrap();
+            let fname = filename(
+                &SatSpec {
+                    id: "npp".to_string(),
+                    short_name: "short_name".to_string(),
+                    base_time: 0,
+                    mission: "mission".to_string(),
+                },
+                "origin",
+                "mode",
+                &Rdr {
+                    product: primary.clone(),
+                    packed_with: vec!["RNSCA".to_string()],
+                    granule_time: dt.timestamp_micros() as u64,
+                    granule_utc: dt.timestamp_micros() as u64,
+                    header: StaticHeader::default(),
+                    apids: HashMap::default(),
+                    trackers: HashMap::default(),
+                    storage: VecDeque::default(),
+                },
+                &Utc::now(),
+            );
+
+            let (prefix, _) = fname.split_once('_').unwrap();
+            assert_eq!(prefix, "RNSCA-RVIRS");
+        }
+
+        #[test]
         fn no_packed_rdrs() {
             let config = get_default("npp").unwrap();
             let primary = config
@@ -421,6 +458,7 @@ mod tests {
                 "mode",
                 &Rdr {
                     product: primary.clone(),
+                    packed_with: Vec::default(),
                     granule_time: dt.timestamp_micros() as u64,
                     granule_utc: dt.timestamp_micros() as u64,
                     header: StaticHeader::default(),
@@ -431,7 +469,8 @@ mod tests {
                 &Utc::now(),
             );
 
-            assert_eq!(fname, "RNSCA-RVIRS");
+            let (prefix, _) = fname.split_once('_').unwrap();
+            assert_eq!(prefix, "RVIRS");
         }
     }
 }

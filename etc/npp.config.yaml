@@ -1,5 +1,6 @@
-origin: test
-mode: dev
+origin: local
+mode: dbc
+distributor: local
 
 satellite:
   id: j01
@@ -7,14 +8,18 @@ satellite:
   base_time: 1698019234000000
   mission: JPSS-1/JPSS
 
+rdrs:
+  - product: RVIRS
+    packed_with: [RNSCA]
+  - product: RCRIS
+    packed_with: [RNSCA]
+
 products:
   - product_id: RVIRS
     short_name: VIIRS-SCIENCE-RDR
     type_id: SCIENCE
-    primary: true
     sensor: VIIRS
     gran_len: 85350000
-    packed_with: ["RNSCA"]
     apids:
       - { "num": 825, "name": "CAL", "max_expected": 1152 }
       - { "num": 821, "name": "DNB", "max_expected": 816 }
@@ -48,10 +53,8 @@ products:
   - product_id: RCRIS
     short_name: CRIS-SCIENCE-RDR
     type_id: SCIENCE
-    primary: true
     sensor: CrIS
     gran_len: 31997000
-    packed_with: ["RNSCA"]
     apids:
       - { "num": 1289, "name": "EIGHT_S_SCI", "max_expected": 5 }
       - { "num": 1290, "name": "ENG", "max_expected": 1 }
@@ -140,7 +143,6 @@ products:
   - product_id: RNSCA
     short_name: SPACECRAFT-DIARY-RDR
     type_id: DIARY
-    primary: false
     gran_len: 20000000
     apids:
       - { "num": 0, "name": "CRITICAL", "max_expected": 21 }

@@ -33,12 +33,12 @@ fn parse_valid_satellite(sat: &str) -> Result<String, String> {
 #[group(multiple = false)]
 struct Configs {
     /// Use the build-in default configuration for this satellite id; one of npp, j01, j02, or j03.
-    #[arg(short, long, value_name = "SAT", value_parser=parse_valid_satellite)]
+    #[arg(short, long, value_name = "name", value_parser=parse_valid_satellite)]
     satellite: Option<String>,
 
     /// YAML decode configuration file to use, rather than a provided default. The format
     /// of the configuration
-    #[arg(short, long, value_name = "PATH")]
+    #[arg(short, long, value_name = "path")]
     config: Option<PathBuf>,
 }
 
@@ -52,12 +52,12 @@ enum Commands {
         /// leap-seconds.list file to use. A default list file is included at build time,
         /// however, if the included list file becomes out of data this option can be used
         /// to specify one. A list file can be obtained from IERS at
-        /// https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list.
+        /// <https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list>.
         #[arg(short, long)]
         leap_seconds: Option<PathBuf>,
 
         /// One or more packet data file. The packet data must be sorted in time and sequence id order.
-        #[arg(required = true)]
+        #[arg(short, long, value_name = "path")]
         input: Vec<PathBuf>,
     },
     /// Output the default configuration
