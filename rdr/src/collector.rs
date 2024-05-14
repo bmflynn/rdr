@@ -62,13 +62,13 @@ impl Collector {
         collector
     }
 
-    fn gran_times(&self, utc: u64, iet: u64, spec: &ProductSpec) -> (u64, u64) {
+    fn gran_times(&self, pkt_utc: u64, pkt_iet: u64, spec: &ProductSpec) -> (u64, u64) {
         let gran_len = spec.gran_len;
         let base_time = self.sat.base_time;
 
         (
-            (utc / gran_len) / gran_len * gran_len,
-            (iet - base_time) / gran_len * gran_len + base_time,
+            (pkt_utc / gran_len) * gran_len,
+            (pkt_iet - base_time) / gran_len * gran_len + base_time,
         )
     }
 
@@ -96,7 +96,7 @@ impl Collector {
         packed
     }
 
-    pub fn add(&mut self, pkt_utc: u64, pkt_iet: u64, pkt: Packet) -> Option<(Rdr, Vec<Rdr>)> {
+    pub fn add(&mut self, pkt_utc: u64, pkt_iet: u64, pkt: Packet) -> Option<Vec<Rdr>> {
         if !self.ids.contains_key(&pkt.header.apid) {
             return None; // apid has no configured product
         }
@@ -126,9 +126,9 @@ impl Collector {
             // products.
             let second_to_last_key = (prod_id.clone(), gran_iet - product.gran_len * 2);
             if self.primary.contains_key(&second_to_last_key) {
-                let primary = self.primary.remove(&second_to_last_key).unwrap(); // already verified it exists
-                let packed = self.overlapping_packed_granules(product, &primary);
-                Some((primary, packed))
+                let mut rdrs = vec![self.primary.remove(&second_to_last_key).unwrap()]; // already verified it exists
+                rdrs.extend_from_slice(&self.overlapping_packed_granules(product, &rdrs[0]));
+                Some(rdrs)
             } else {
                 None
             }
@@ -147,16 +147,16 @@ impl Collector {
         }
     }
 
-    pub fn finish(mut self) -> Vec<(Rdr, Vec<Rdr>)> {
+    pub fn finish(mut self) -> Vec<Vec<Rdr>> {
         let mut keys: Vec<(String, u64)> = self.primary.keys().map(|k| (*k).clone()).collect();
         keys.sort_by(|a, b| a.1.cmp(&b.1));
 
         let mut finished = Vec::default();
         for key in &keys {
             let product = self.products.get(&key.0).unwrap(); // we have a primary rdr, so this product exists
-            let primary = self.primary.remove(key).unwrap(); // already checked it exists
-            let packed = self.overlapping_packed_granules(product, &primary);
-            finished.push((primary, packed));
+            let mut rdrs = vec![self.primary.remove(key).unwrap()]; // already verified it exists
+            rdrs.extend_from_slice(&self.overlapping_packed_granules(product, &rdrs[0]));
+            finished.push(rdrs);
         }
 
         finished

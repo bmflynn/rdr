@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use ccsds::{CDSTimeDecoder, Packet, TimeDecoder};
+use chrono::Utc;
 use std::{
     fmt::Display,
     fs::File,
@@ -38,11 +39,10 @@ impl Default for LeapSecs {
 
 impl Display for LeapSecs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "LeapSecs{{updated:{}, expired:{}}}",
-            self.updated, self.expired
-        )
+        let secs = i64::try_from(self.updated).unwrap_or(0);
+        let dt: chrono::DateTime<Utc> = chrono::DateTime::from_timestamp(secs, 0)
+            .unwrap_or(chrono::DateTime::from_timestamp(0, 0).unwrap());
+        write!(f, "LeapSecs{{updated:{dt}, expired:{}}}", self.expired)
     }
 }
 
@@ -65,8 +65,8 @@ impl LeapSecs {
         }
 
         let utc_offset = Timestamp::from_date_time(DateTime {
-            date: Date::new(1970, 1, 1).expect("valid date"),
-            time: Time::new(0, 0, 0).expect("valid time"),
+            date: Date::new(1970, 1, 1).unwrap(),
+            time: Time::new(0, 0, 0).unwrap(),
         })
         .expect("valid datetime")
         .as_u64();
@@ -106,7 +106,8 @@ impl LeapSecs {
         if leapsecs < 0 {
             0
         } else {
-            leapsecs as u64 * 1000 * 1000
+            // Already checked that it's >= 0
+            u64::try_from(leapsecs).unwrap() * 1_000_000
         }
     }
 
@@ -116,11 +117,11 @@ impl LeapSecs {
     }
 }
 
-/// Function that decodes a packets UTC and IET times
-pub type TimeFcn = dyn Fn(&Packet) -> (u64, u64);
+/// Function that decodes a packets UTC and IET times in microseconds.
+pub type TimeFcn = dyn Fn(&Packet) -> (u64, u64) + Send;
 
-pub fn time_decoder(leaps_list: Option<&Path>) -> Result<Box<TimeFcn>> {
-    let leaps = LeapSecs::new(leaps_list)?;
+// Return a ``TimeFcn`` using the provided ``LeapSecs``.
+pub fn time_decoder(leaps: LeapSecs) -> Result<Box<TimeFcn>> {
     let decoder = CDSTimeDecoder;
 
     let fcn = move |pkt: &Packet| -> (u64, u64) {

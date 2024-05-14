@@ -1,22 +1,34 @@
 use anyhow::Context;
 use ccsds::{Apid, Packet};
+use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
 
 use crate::config::{ProductSpec, SatSpec};
 
 #[derive(Clone)]
 pub struct Rdr {
+    /// The product for this rdr
     pub product: ProductSpec,
+    /// Any other products that are packed with this rdr, .e.g., RNSCA
     pub packed_with: Vec<String>,
+    /// Granule time in IET microseconds
     pub granule_time: u64,
+    /// Granule time in UTC microseconds
     pub granule_utc: u64,
+    /// Common RDR static header
     pub header: StaticHeader,
+    /// Common RDR ``ApidLists`` for each apid
     pub apids: HashMap<Apid, ApidList>,
+    /// Common RDR ``PacketTrackers`` for each apid
     pub trackers: HashMap<Apid, Vec<PacketTracker>>,
+    /// Common RDR packet storage area
     pub storage: VecDeque<Packet>,
+    /// Time this RDR was created
+    pub created: DateTime<Utc>,
 }
 
 impl Rdr {
+    #[must_use]
     pub fn new(
         gran_utc: u64,
         gran_iet: u64,
@@ -33,6 +45,7 @@ impl Rdr {
             apids: HashMap::default(),
             trackers: HashMap::default(),
             storage: VecDeque::default(),
+            created: Utc::now(),
         };
 
         for apid in &product.apids {
@@ -51,6 +64,7 @@ impl Rdr {
 
         rdr
     }
+
     fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
         let trackers = self.trackers.entry(pkt.header.apid).or_default();
         let offset = match trackers.last() {
@@ -90,10 +104,10 @@ impl Rdr {
         apid_list.pkts_received += 1;
     }
 
-    /// Add a packet and update the RDR structures.
+    /// Add a packet and update the Common RDR structures and offsets.
     ///
     /// # Panics
-    /// If any of the offset math overflows
+    /// If the packet traker offset overflows
     pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet, product: &ProductSpec) {
         self.add_tracker(gran_iet, &pkt);
         self.update_apid_list(product, &pkt);
@@ -115,6 +129,7 @@ impl Rdr {
     ///
     /// # Panics
     /// If structure counts overflow rdr structure types
+    #[must_use]
     pub fn compile(&self) -> Vec<u8> {
         let mut dat = Vec::new();
         // Static header should be good-to-go because it's updated on every call to add_packet
@@ -133,7 +148,7 @@ impl Rdr {
             dat.extend_from_slice(&list.as_bytes());
             // Assume tracker and lists have the same apids, and since we're handing apids in
             // order can can just use the num trackers for this apid
-            tracker_start_idx += u32::try_from(self.trackers[&apid].len()).unwrap();
+            tracker_start_idx += u32::try_from(self.trackers[apid].len()).unwrap();
         }
 
         for apid in apids {

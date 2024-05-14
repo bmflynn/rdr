@@ -59,7 +59,7 @@ pub(crate) struct DataProductsRefWriter {
 }
 
 impl DataProductsRefWriter {
-    pub fn write_ref(&mut self, file: &File, rdr: &Rdr, src_path: &str) -> Result<()> {
+    pub fn write_ref(&mut self, file: &File, rdr: &Rdr, src_path: &str) -> Result<String> {
         let (src_group_path, _) = src_path
             .rsplit_once('/')
             .expect("dataset path to have 3 parts");
@@ -168,7 +168,7 @@ impl DataProductsRefWriter {
             "writing ref to dest dataset".to_string()
         );
 
-        Ok(())
+        Ok(format!("{dst_group_path}/{dst_dataset_name}"))
     }
 }
 

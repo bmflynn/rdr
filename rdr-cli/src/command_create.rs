@@ -4,15 +4,17 @@ use rdr::{
     collector::{Collector, PacketTimeIter},
     config::{get_default, Config},
     merge,
-    time::time_decoder,
+    time::{time_decoder, LeapSecs},
     writer::write_hdf5,
 };
 use std::{
     fs::{create_dir, File},
     path::PathBuf,
+    sync::mpsc::channel,
+    thread,
 };
 use tempfile::TempDir;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Config> {
     match satellite {
@@ -51,8 +53,10 @@ pub fn create(
 
     let fin = File::open(input.clone()).with_context(|| format!("opening input: {input:?}"))?;
     let groups = read_packet_groups(fin).filter_map(Result::ok);
-    let decode_iet =
-        time_decoder(leap_seconds.as_deref()).context("initializing leap-seconds db")?;
+
+    let leaps = LeapSecs::new(leap_seconds.as_deref()).context("creating leapsecs db")?;
+    info!("leap seconds {leaps}");
+    let decode_iet = time_decoder(leaps).context("initializing leap-seconds db")?;
 
     let mut collector = Collector::new(config.satellite.clone(), &config.rdrs, &config.products);
 
@@ -61,26 +65,45 @@ pub fn create(
         create_dir(&dest)?;
     }
 
-    for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(groups, decode_iet) {
-        let complete = collector.add(pkt_utc, pkt_iet, pkt);
+    let (tx, rx) = channel();
 
-        if let Some((rdr, packed)) = complete {
-            debug!(
-                "collected RDR {}/{} granule={}",
-                rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
-            );
+    thread::scope(|s| {
+        s.spawn(move || {
+            for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(groups, decode_iet) {
+                let complete = collector.add(pkt_utc, pkt_iet, pkt);
 
-            let fpath = write_hdf5(&config, &rdr, &packed, &dest).context("writing h5")?;
-            info!("wrote {fpath:?}");
-        }
-    }
+                if let Some(rdrs) = complete {
+                    debug!(
+                        "collected RDR {}/{} granule={}",
+                        rdrs[0].header.satellite, rdrs[0].product.short_name, rdrs[0].granule_time,
+                    );
+                    let _ = tx.send(rdrs);
+                }
+            }
 
-    for (rdr, packed) in collector.finish() {
-        debug!(
-            "collected RDR {}/{} granule={}",
-            rdr.header.satellite, rdr.product.short_name, rdr.granule_time,
-        );
-    }
+            for rdrs in collector.finish() {
+                debug!(
+                    "collected RDR {}/{} granule={}",
+                    rdrs[0].header.satellite, rdrs[0].product.short_name, rdrs[0].granule_time,
+                );
+                let _ = tx.send(rdrs);
+            }
+        });
+
+        s.spawn(move || {
+            for rdrs in rx {
+                match write_hdf5(&config, &rdrs, &dest).context("writing h5") {
+                    Ok(fpath) => info!("wrote {fpath:?}"),
+                    Err(err) => {
+                        error!(
+                            "failed writing rdr for product={} granule_iet={}: {err}",
+                            rdrs[0].product.short_name, rdrs[0].granule_time
+                        );
+                    }
+                };
+            }
+        });
+    });
 
     if let Some(dir) = tmpdir {
         debug!(dir = ?dir.path(), "removing tempdir");
