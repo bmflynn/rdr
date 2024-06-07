@@ -13,3 +13,6 @@ rdr = { version = "0.1.0", path = "../rdr" }
 tempfile = "3.10.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+hdf5 = "0.8.1"
+ndarray = "0.15.6"
+chrono = "0.4.38"

@@ -1,5 +1,5 @@
 mod command_create;
-mod command_info;
+mod command_dump;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -10,9 +10,9 @@ use std::{
 
 use rdr::config::get_default_content;
 
-/// Create JPSS RDR HDF5 files from CCSDS spacepacket data files.
-///
-/// Blah, blah, blah...
+use crate::command_dump::dump;
+
+/// Tool for manipulating JPSS RDR HDF5 files.
 #[derive(Parser)]
 #[command(version, about, long_about)]
 struct Cli {
@@ -30,14 +30,14 @@ fn parse_valid_satellite(sat: &str) -> Result<String, String> {
 }
 
 #[derive(Args)]
-#[group(multiple = false)]
+#[group(multiple = false, required = true)]
 struct Configs {
     /// Use the build-in default configuration for this satellite id; one of npp, j01, j02, or j03.
     #[arg(short, long, value_name = "name", value_parser=parse_valid_satellite)]
     satellite: Option<String>,
 
-    /// YAML decode configuration file to use, rather than a provided default. The format
-    /// of the configuration
+    /// YAML decode configuration file to use, rather than a embeded default config. See the
+    /// config subcommand to view embeded configuration.
     #[arg(short, long, value_name = "path")]
     config: Option<PathBuf>,
 }
@@ -45,11 +45,18 @@ struct Configs {
 #[derive(Subcommand)]
 enum Commands {
     /// Create an RDR from spacepacket/level-0 data.
+    ///
+    /// The default configuration should be good for most cases, but if you want to try your
+    /// luck at modifying the default configuration or adding support for a new spacecraft you can
+    /// start by dumping the provided default configuration using the config sub-command and
+    /// modify from there.
     Create {
         #[command(flatten)]
         configs: Configs,
 
-        /// leap-seconds.list file to use. A default list file is included at build time,
+        /// leap-seconds.list file to use.
+        ///
+        /// A default list file is included at build time,
         /// however, if the included list file becomes out of data this option can be used
         /// to specify one. A list file can be obtained from IERS at
         /// <https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list>.
@@ -60,16 +67,17 @@ enum Commands {
         #[arg(short, long, value_name = "path")]
         input: Vec<PathBuf>,
     },
-    /// Output the default configuration
+    /// Extract the spacespacet data contained in the RDR.
+    Dump {
+        /// One or more RDR file
+        #[arg(short, long, value_name = "path")]
+        input: PathBuf,
+    },
+    /// Output the default configuration.
     Config {
         /// Satellite to show the config for
         #[arg(value_name = "SAT", value_parser=parse_valid_satellite)]
         satellite: String,
-    },
-    Info {
-        /// Input file
-        #[arg()]
-        rdr: PathBuf,
     },
 }
 
@@ -96,11 +104,11 @@ fn main() -> Result<()> {
                 &input,
             )?;
         }
+        Commands::Dump { input } => {
+            dump(input, true)?;
+        }
         Commands::Config { satellite } => {
             stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;
-        }
-        Commands::Info { rdr } => {
-            crate::command_info::info(rdr)?;
         }
     }
 

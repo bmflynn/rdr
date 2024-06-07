@@ -127,7 +127,7 @@ checksum = "d32a725bc159af97c3e629873bb9f88fb8cf8a4867175f76dc987815ea07c83b"
 
 [[package]]
 name = "ccsds"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "crossbeam",
  "ndarray",
@@ -731,7 +731,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ccsds",
+ "chrono",
  "clap",
+ "hdf5",
+ "ndarray",
  "rdr",
  "tempfile",
  "tracing",
