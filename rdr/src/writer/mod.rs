@@ -227,13 +227,16 @@ fn set_product_dataset_attrs(
             name: format!("creating name={name} val={apid_names:?}"),
             msg: e.to_string(),
         })?;
-
     attr.write_raw(&pkt_type_arr).map_err(|e| Error::Hdf5 {
         name: format!("writing name={name} val={apid_names:?}"),
         msg: e.to_string(),
     })?;
 
-    // TODO: Figure out the correct computation for missing data
+    // TODO: Get/compute N_Packet_Type_Count
+    // Packet counts could be tracked as part of Rdr object
+
+    // TODO: Compute missing percent.
+    // This should be based on received vs. expected packet counts
     let (name, val) = ("N_Percent_Missing_Data", 0.0);
     let attr = dataset
         .new_attr::<f32>()

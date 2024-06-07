@@ -1,7 +1,10 @@
 use anyhow::Context;
 use ccsds::{Apid, Packet};
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Display,
+};
 
 use crate::config::{ProductSpec, SatSpec};
 
@@ -162,6 +165,24 @@ impl Rdr {
         }
 
         dat
+    }
+
+    #[must_use]
+    pub fn granule_dt(&self) -> DateTime<Utc> {
+        let start_ns = i64::try_from(self.granule_utc * 1000).unwrap_or(0);
+        DateTime::from_timestamp_nanos(start_ns)
+    }
+}
+
+impl Display for Rdr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Rdr{{product={} granule=({}, {})}}",
+            self.product.short_name,
+            self.granule_dt(),
+            self.granule_time
+        )
     }
 }
 

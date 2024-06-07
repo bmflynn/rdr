@@ -66,26 +66,17 @@ pub fn create(
     }
 
     let (tx, rx) = channel();
-
     thread::scope(|s| {
         s.spawn(move || {
             for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(groups, decode_iet) {
                 let complete = collector.add(pkt_utc, pkt_iet, pkt);
-
                 if let Some(rdrs) = complete {
-                    debug!(
-                        "collected RDR {}/{} granule={}",
-                        rdrs[0].header.satellite, rdrs[0].product.short_name, rdrs[0].granule_time,
-                    );
+                    debug!("collected {}", rdrs[0]);
                     let _ = tx.send(rdrs);
                 }
             }
-
             for rdrs in collector.finish() {
-                debug!(
-                    "collected RDR {}/{} granule={}",
-                    rdrs[0].header.satellite, rdrs[0].product.short_name, rdrs[0].granule_time,
-                );
+                debug!("collected {}", rdrs[0]);
                 let _ = tx.send(rdrs);
             }
         });
@@ -93,12 +84,9 @@ pub fn create(
         s.spawn(move || {
             for rdrs in rx {
                 match write_hdf5(&config, &rdrs, &dest).context("writing h5") {
-                    Ok(fpath) => info!("wrote {fpath:?}"),
+                    Ok(fpath) => info!("wrote {} to {fpath:?}", rdrs[0]),
                     Err(err) => {
-                        error!(
-                            "failed writing rdr for product={} granule_iet={}: {err}",
-                            rdrs[0].product.short_name, rdrs[0].granule_time
-                        );
+                        error!("failed writing {}: {err}", rdrs[0],);
                     }
                 };
             }
