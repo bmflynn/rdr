@@ -105,7 +105,7 @@ fn main() -> Result<()> {
             )?;
         }
         Commands::Dump { input } => {
-            dump(input, true)?;
+            dump(&input, true)?;
         }
         Commands::Config { satellite } => {
             stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;

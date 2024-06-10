@@ -20,23 +20,23 @@ enum DatasetType<'a> {
 }
 
 fn dataset_name(scid: u8, type_: &DatasetType, created: DateTime<Utc>) -> String {
-    let dstr = created.format("%Y%m%d%H%M%S");
+    let dstr = created.format("%y%j%H%M%S");
     match type_ {
         DatasetType::Science(path) => {
             if path.contains("VIIRS") {
-                format!("P{scid:03}0826VIIRSSCIENCEAS{dstr}01.PDS")
+                format!("P{scid:03}0826VIIRSSCIENCEAS{dstr}001.PDS")
             } else if path.contains("CRIS") {
-                format!("P{scid:03}1289CRISSCIENCEAAS{dstr}01.PDS")
+                format!("P{scid:03}1289CRISSCIENCEAAS{dstr}001.PDS")
             } else if path.contains("ATMS") {
-                format!("P{scid:03}0515ATMSSCIENCEAAS{dstr}01.PDS")
+                format!("P{scid:03}0515ATMSSCIENCEAAS{dstr}001.PDS")
             } else if path.contains("OMPS") {
-                format!("P{scid:03}????OMPSSCIENCEAAS{dstr}01.PDS")
+                format!("P{scid:03}????OMPSSCIENCEAAS{dstr}001.PDS")
             } else {
                 format!("{scid:03}-{dstr}.dat")
             }
         }
         DatasetType::Spacecraft(apid) => {
-            format!("P{scid:03}{apid:04}AAAAAAAAAAAAAS{dstr}01.PDS")
+            format!("P{scid:03}{apid:04}AAAAAAAAAAAAAS{dstr}001.PDS")
         }
     }
 }
@@ -45,8 +45,13 @@ fn dataset_name(scid: u8, type_: &DatasetType, created: DateTime<Utc>) -> String
 fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<PathBuf>> {
     let mut files = Vec::default();
 
-    for (idx, dataset) in group.datasets()?.iter().enumerate() {
-        let bytes = dataset.read_1d::<u8>()?;
+    for (idx, dataset) in group
+        .datasets()
+        .context("Getting group datasets")?
+        .iter()
+        .enumerate()
+    {
+        let bytes = dataset.read_1d::<u8>().context("Reading data")?;
         debug!("{path} dimension {}", bytes.dim());
 
         let ap_offset = {
@@ -74,7 +79,7 @@ fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<Pat
             .join(path.replace('/', "::"))
             .with_extension(format!("{idx}"));
         debug!("writing to {destpath:?}");
-        fs::write(&destpath, packet_data)?;
+        fs::write(&destpath, packet_data).with_context(|| format!("Writing to {destpath:?}"))?;
 
         files.push(destpath.clone());
     }
@@ -96,8 +101,9 @@ fn dump_group(
     }
     let destpath = workdir.join(dataset_name(scid, &DatasetType::Science(path), created));
     debug!("merging {} files to {destpath:?}", files.len());
-    let dest = File::create(&destpath)?;
-    ccsds::merge_by_timecode(&files, &ccsds::CDSTimeDecoder, dest).context("merging")?;
+    let dest = File::create(&destpath).with_context(|| format!("Creating {destpath:?}"))?;
+    ccsds::merge_by_timecode(&files, &ccsds::CDSTimeDecoder, dest)
+        .with_context(|| format!("Merging {} files", files.len()))?;
 
     Ok(Some(destpath))
 }
@@ -146,12 +152,15 @@ pub fn split_spacecraft(fpath: &Path, scid: u8, created: DateTime<Utc>) -> Resul
     Ok(paths)
 }
 
-pub fn dump(input: PathBuf, spacecraft: bool) -> Result<()> {
-    let scid = get_spacecraft(&input);
+pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
+    if !input.is_file() {
+        bail!("Failed to open {input:?}");
+    }
+    let scid = get_spacecraft(input);
     let workdir = TempDir::new()?;
     let created = Utc::now();
 
-    let file = H5File::open(input)?;
+    let file = H5File::open(input).context("Opening input")?;
 
     let mut groups = Vec::default();
     for sensor in SUPPORTED_SENSORS {
@@ -189,7 +198,7 @@ pub fn dump(input: PathBuf, spacecraft: bool) -> Result<()> {
                 info!("wrote {dest:?}");
             }
         } else {
-            debug!("{group_path} does not exist, skipping");
+            debug!("Failed to open {group_path}, assuming it does not exist");
         }
     }
 
