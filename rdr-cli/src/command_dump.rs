@@ -1,32 +1,47 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hdf5::{File as H5File, Group};
 use ndarray::s;
 use tempfile::TempDir;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const SUPPORTED_SENSORS: [&str; 4] = ["VIIRS", "CRIS", "ATMS", "OMPS"];
 
-fn path_to_name(scid: u8, path: &str, created: DateTime<Utc>) -> String {
+enum DatasetType<'a> {
+    Science(&'a str),
+    Spacecraft(u16),
+}
+
+fn dataset_name(scid: u8, type_: &DatasetType, created: DateTime<Utc>) -> String {
     let dstr = created.format("%Y%m%d%H%M%S");
-    if path.contains("VIIRS") {
-        format!("P{scid:03}0826VIIRSSCIENCEAS{dstr}01.PDS")
-    } else if path.contains("CRIS") {
-        format!("P{scid:03}1289CRISSCIENCEAAS{dstr}01.PDS")
-    } else if path.contains("ATMS") {
-        format!("P{scid:03}0515ATMSSCIENCEAAS{dstr}01.PDS")
-    } else if path.contains("OMPS") {
-        format!("P{scid:03}????OMPSSCIENCEAAS{dstr}01.PDS")
-    } else {
-        format!("{scid}-{dstr}.dat")
+    match type_ {
+        DatasetType::Science(path) => {
+            if path.contains("VIIRS") {
+                format!("P{scid:03}0826VIIRSSCIENCEAS{dstr}01.PDS")
+            } else if path.contains("CRIS") {
+                format!("P{scid:03}1289CRISSCIENCEAAS{dstr}01.PDS")
+            } else if path.contains("ATMS") {
+                format!("P{scid:03}0515ATMSSCIENCEAAS{dstr}01.PDS")
+            } else if path.contains("OMPS") {
+                format!("P{scid:03}????OMPSSCIENCEAAS{dstr}01.PDS")
+            } else {
+                format!("{scid:03}-{dstr}.dat")
+            }
+        }
+        DatasetType::Spacecraft(apid) => {
+            format!("P{scid:03}{apid:04}AAAAAAAAAAAAAS{dstr}01.PDS")
+        }
     }
 }
 
+/// Dump the Common RDR Application Packets Storage to a file.
 fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<PathBuf>> {
     let mut files = Vec::default();
 
@@ -67,16 +82,24 @@ fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<Pat
     Ok(files)
 }
 
-fn dump_group(workdir: &Path, scid: u8, path: &str, group: &Group) -> Result<PathBuf> {
+fn dump_group(
+    workdir: &Path,
+    scid: u8,
+    path: &str,
+    group: &Group,
+    created: DateTime<Utc>,
+) -> Result<Option<PathBuf>> {
     info!("dumping {path} to {workdir:?}");
     let files = dump_datasets_to(workdir, path, group)?;
-    let created: DateTime<Utc> = Utc::now();
-    let destpath = workdir.join(path_to_name(scid, path, created));
-    info!("merging {} files to {destpath:?}", files.len());
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let destpath = workdir.join(dataset_name(scid, &DatasetType::Science(path), created));
+    debug!("merging {} files to {destpath:?}", files.len());
     let dest = File::create(&destpath)?;
     ccsds::merge_by_timecode(&files, &ccsds::CDSTimeDecoder, dest).context("merging")?;
 
-    Ok(destpath)
+    Ok(Some(destpath))
 }
 
 fn get_spacecraft(path: &Path) -> u8 {
@@ -96,9 +119,37 @@ fn get_spacecraft(path: &Path) -> u8 {
     }
 }
 
+pub fn split_spacecraft(fpath: &Path, scid: u8, created: DateTime<Utc>) -> Result<Vec<PathBuf>> {
+    let mut files: HashMap<u16, File> = HashMap::default();
+    let mut paths: Vec<PathBuf> = Vec::default();
+
+    for packet in ccsds::read_packets(&File::open(fpath)?) {
+        if let Err(err) = packet {
+            bail!("error while reading packets: {err}");
+        }
+        let packet = packet.unwrap();
+
+        let dest = files.entry(packet.header.apid).or_insert_with(|| {
+            let sc_path = fpath.with_file_name(dataset_name(
+                scid,
+                &DatasetType::Spacecraft(packet.header.apid),
+                created,
+            ));
+            debug!("creating {sc_path:?}!");
+            paths.push(sc_path.clone());
+            File::create(&sc_path).expect("could not create destination")
+        });
+
+        dest.write_all(&packet.data)?;
+    }
+
+    Ok(paths)
+}
+
 pub fn dump(input: PathBuf, spacecraft: bool) -> Result<()> {
     let scid = get_spacecraft(&input);
     let workdir = TempDir::new()?;
+    let created = Utc::now();
 
     let file = H5File::open(input)?;
 
@@ -108,19 +159,37 @@ pub fn dump(input: PathBuf, spacecraft: bool) -> Result<()> {
         groups.push(path);
     }
     if spacecraft {
-        groups.push("All_Data/SPACECRAFT-DIARY-RDR_All".to_owned());
+        groups.push("All_Data/SPACECRAFT-DIARY-RDR_All".to_string());
     }
 
-    for path in groups {
-        debug!("trying to dump {path}");
-        if let Ok(group) = file.group(&path) {
-            info!("dumping {path} to {:?}", workdir.path());
-            let path = dump_group(workdir.path(), scid, &path, &group)?;
-            let dest = path.file_name().unwrap();
-            fs::rename(&path, path.file_name().unwrap())
-                .with_context(|| format!("renaming {path:?} to {dest:?}"))?;
+    for group_path in groups {
+        debug!("trying to dump {group_path}");
+        if let Ok(group) = file.group(&group_path) {
+            let dat_path = dump_group(workdir.path(), scid, &group_path, &group, created)?;
+            if dat_path.is_none() {
+                warn!("no data found for {group_path}");
+                continue;
+            }
+            let dat_path = dat_path.unwrap();
+
+            if spacecraft && group_path.contains("SPACECRAFT") {
+                debug!("splitting {dat_path:?} into separate spacecraft files");
+                let files = split_spacecraft(&dat_path, scid, created)
+                    .context("splitting spacecraft files")?;
+                for fpath in files {
+                    let dest = fpath.file_name().unwrap();
+                    fs::rename(&fpath, dest)
+                        .with_context(|| format!("renaming {dat_path:?} to {dest:?}"))?;
+                    info!("wrote {dest:?}");
+                }
+            } else {
+                let dest = dat_path.file_name().unwrap();
+                fs::rename(&dat_path, dest)
+                    .with_context(|| format!("renaming {dat_path:?} to {dest:?}"))?;
+                info!("wrote {dest:?}");
+            }
         } else {
-            debug!("{path} does not exist, skipping");
+            debug!("{group_path} does not exist, skipping");
         }
     }
 

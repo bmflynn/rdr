@@ -16,3 +16,8 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 hdf5 = "0.8.1"
 ndarray = "0.15.6"
 chrono = "0.4.38"
+
+# Example of customizing binaries in Cargo.toml.
+[[bin]]
+name = "rdr"
+path = "src/main.rs"
