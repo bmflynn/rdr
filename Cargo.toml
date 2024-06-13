@@ -1,6 +1,19 @@
-
 [workspace]
 resolver = "2"
-members = [
-  "rdr", "rdr-cli",
-]
+members = ["lib", "cmd",]
+
+[workspace.package]
+version = "0.1.0-beta.1"
+edition = "2021"
+authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
+repository = "https://gitlab.ssec.wisc.edu/brucef/rdr"
+license-file = "LICENCE.txt"
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+hdf5 = "0.8.1"
+hdf5-sys = "0.8.1"
+tracing = "0.1"
+ndarray = "0.15.6"
+ccsds = { path = "../ccsds-rs/lib" }
