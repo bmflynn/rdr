@@ -11,8 +11,9 @@ license-file = "LICENCE.txt"
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
-hdf5 = "0.8.1"
-hdf5-sys = "0.8.1"
+hdf5 = { version = "0.8.1" }
+hdf5-src = { version = "0.8.1", features = ["threadsafe"] }
+hdf5-sys = { version = "0.8.1", features = ["static"] }
 ndarray = "0.15.6"
 ccsds = { path = "../ccsds-rs/lib" }
 crossbeam = "0.8.4"
