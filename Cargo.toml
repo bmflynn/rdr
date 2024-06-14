@@ -1,6 +1,6 @@
 [package]
 name = "rdr"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2021"
 description = "JPSS HDF5 Raw-Data-Record (RDR) Utility"
 authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
