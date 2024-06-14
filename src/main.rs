@@ -12,6 +12,7 @@ use std::{
     io::{stderr, stdout, Write},
     path::PathBuf,
 };
+use tracing_subscriber::EnvFilter;
 
 use crate::command_dump::dump;
 use crate::config::get_default_content;
@@ -97,7 +98,9 @@ fn main() -> Result<()> {
         .with_writer(stderr)
         .with_ansi(false)
         .without_time()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_env("RDR_LOG"))
+        .with_env_filter(
+            EnvFilter::try_from_env("RDR_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let cli = Cli::parse();
