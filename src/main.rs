@@ -1,5 +1,10 @@
+mod collector;
 mod command_create;
 mod command_dump;
+mod config;
+mod rdr;
+mod time;
+mod writer;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -8,13 +13,12 @@ use std::{
     path::PathBuf,
 };
 
-use rdr::config::get_default_content;
-
 use crate::command_dump::dump;
+use crate::config::get_default_content;
 
 /// Tool for manipulating JPSS RDR HDF5 files.
 #[derive(Parser)]
-#[command(version, about, long_about, disable_help_subcommand=true)]
+#[command(version, about, long_about, disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     commands: Commands,
@@ -66,6 +70,10 @@ enum Commands {
         /// One or more packet data file. The packet data must be sorted in time and sequence id order.
         #[arg(short, long, value_name = "path")]
         input: Vec<PathBuf>,
+
+        /// Output directory.
+        #[arg(short, long, value_name = "path", default_value = "output")]
+        output: PathBuf,
     },
     /// Extract the spacepacket data contained in the RDR.
     Dump {
@@ -101,12 +109,14 @@ fn main() -> Result<()> {
             configs,
             leap_seconds,
             input,
+            output,
         } => {
             crate::command_create::create(
                 configs.satellite,
                 configs.config,
-                &leap_seconds,
+                leap_seconds,
                 &input,
+                output,
             )?;
         }
         Commands::Dump { input } => {

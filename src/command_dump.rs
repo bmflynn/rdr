@@ -5,10 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::rdr::{ApidInfo, PacketTracker, StaticHeader};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hdf5::{File as H5File, Group};
-use rdr::rdr::{ApidInfo, PacketTracker, StaticHeader};
 use tempfile::TempDir;
 use tracing::{debug, info, trace, warn};
 

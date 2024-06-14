@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{bail, Context, Result};
 
 use hdf5::File;
 use hdf5_sys::{
@@ -13,7 +13,6 @@ use hdf5_sys::{
 };
 use std::ffi::{c_char, CString};
 
-use crate::prelude::*;
 use crate::rdr::Rdr;
 
 macro_rules! cstr {
@@ -28,10 +27,7 @@ macro_rules! cstr {
 macro_rules! chkid {
     ($id:expr, $name:expr, $msg:expr) => {
         if $id == H5I_INVALID_HID {
-            return Err(Error::Hdf5 {
-                name: $name,
-                msg: $msg,
-            });
+            bail!("invalid h5 id: name={}: {}", $name, $msg);
         }
     };
 }
@@ -39,10 +35,7 @@ macro_rules! chkid {
 macro_rules! chkerr {
     ($id:expr, $name:expr, $msg:expr) => {
         if $id < 0 {
-            return Err(Error::Hdf5 {
-                name: $name,
-                msg: $msg,
-            });
+            bail!("h5 error name={}: {}", $name, $msg);
         }
     };
 }

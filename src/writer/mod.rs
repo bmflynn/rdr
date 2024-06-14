@@ -2,14 +2,13 @@ mod hdfc;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use hdf5::{types::VarLenAscii, File};
 use ndarray::arr1;
 
 use crate::{
     config::{Config, ProductSpec, SatSpec},
-    prelude::*,
     rdr::{Rdr, RdrWriter},
 };
 
@@ -17,11 +16,7 @@ use crate::{
 ///
 /// # Errors
 /// All errors creating or wri
-pub fn write_hdf5(
-    config: &Config,
-    rdrs: &[RdrWriter],
-    dest: &Path,
-) -> crate::error::Result<PathBuf> {
+pub fn write_hdf5(config: &Config, rdrs: &[RdrWriter], dest: &Path) -> Result<PathBuf> {
     let primary = &rdrs[0];
     let packed = &rdrs[1..];
 
@@ -98,20 +93,13 @@ fn set_global_attrs(config: &Config, file: &mut File, created: &DateTime<Utc>) -
             .new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .map_err(|e| Error::Hdf5 {
-                name: format!("name={name} val={val}"),
-                msg: e.to_string(),
-            })?;
+            .map_err(|e| anyhow!("h5 attr create error name=All_Data: {e}"))?;
 
-        let ascii = VarLenAscii::from_ascii(&val).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        let ascii = VarLenAscii::from_ascii(&val)
+            .map_err(|e| anyhow!("h5 attr ascii error name=All_Data: {e}"))?;
 
-        attr.write_raw(&[ascii]).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        attr.write_raw(&[ascii])
+            .map_err(|e| anyhow!("h5 attr write error name=All_Data: {e}"))?;
     }
 
     Ok(())
@@ -119,10 +107,8 @@ fn set_global_attrs(config: &Config, file: &mut File, created: &DateTime<Utc>) -
 
 fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &RdrWriter) -> Result<String> {
     if file.group("All_Data").is_err() {
-        file.create_group("All_Data").map_err(|e| Error::Hdf5 {
-            name: "All_Data".to_string(),
-            msg: e.to_string(),
-        })?;
+        file.create_group("All_Data")
+            .map_err(|e| anyhow!("h5 group create error name=All_Data: {e}"))?;
     }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
@@ -131,10 +117,7 @@ fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &RdrWriter) -> Result
     file.new_dataset_builder()
         .with_data(&arr1(&rdr.compile()[..]))
         .create(name.clone().as_str())
-        .map_err(|e| Error::Hdf5 {
-            name: name.to_string(),
-            msg: e.to_string(),
-        })?;
+        .map_err(|e| anyhow!("h5 dataset create error name={name}: {e}"))?;
     Ok(name)
 }
 
@@ -176,20 +159,13 @@ fn set_product_dataset_attrs(
             .new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .map_err(|e| Error::Hdf5 {
-                name: format!("name={name} val={val}"),
-                msg: e.to_string(),
-            })?;
+            .map_err(|e| anyhow!("h5 attr create error name={name} val={val}: {e}"))?;
 
-        let ascii = VarLenAscii::from_ascii(&val).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        let ascii = VarLenAscii::from_ascii(&val)
+            .map_err(|e| anyhow!("h5 attr ascii error name={name} val={val}: {e}"))?;
 
-        attr.write_raw(&[ascii]).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        attr.write_raw(&[ascii])
+            .map_err(|e| anyhow!("h5 attr write error name={name} val={val}: {e}"))?;
     }
 
     for (name, val) in [
@@ -201,25 +177,18 @@ fn set_product_dataset_attrs(
             .new_attr::<u64>()
             .shape([1, 1])
             .create(name)
-            .map_err(|e| Error::Hdf5 {
-                name: format!("name={name} val={val}"),
-                msg: e.to_string(),
-            })?;
+            .map_err(|e| anyhow!("h5 attr create error name={name} val={val}: {e}"))?;
 
-        attr.write_raw(&[val]).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        attr.write_raw(&[val])
+            .map_err(|e| anyhow!("h5 attr write error name={name} val={val}: {e}"))?;
     }
 
     let name = "N_Packet_Type";
     let apid_names: Vec<String> = rdr.product.apids.iter().map(|a| a.name.clone()).collect();
     let mut pkt_type_arr: Vec<VarLenAscii> = Vec::default();
     for (i, x) in apid_names.iter().enumerate() {
-        let ascii = VarLenAscii::from_ascii(x.as_bytes()).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val[{i}]={x:?}"),
-            msg: e.to_string(),
-        })?;
+        let ascii = VarLenAscii::from_ascii(x.as_bytes())
+            .map_err(|e| anyhow!("h5 attr ascii error name={name} val[{i}]={x:?}: {e}"))?;
         pkt_type_arr.push(ascii);
     }
     let attr = dataset
@@ -227,14 +196,9 @@ fn set_product_dataset_attrs(
         .packed(true)
         .shape([pkt_type_arr.len(), 1])
         .create(name)
-        .map_err(|e| Error::Hdf5 {
-            name: format!("creating name={name} val={apid_names:?}"),
-            msg: e.to_string(),
-        })?;
-    attr.write_raw(&pkt_type_arr).map_err(|e| Error::Hdf5 {
-        name: format!("writing name={name} val={apid_names:?}"),
-        msg: e.to_string(),
-    })?;
+        .map_err(|e| anyhow!("h5 attr create error name={name} val={apid_names:?}: {e}"))?;
+    attr.write_raw(&pkt_type_arr)
+        .map_err(|e| anyhow!("h5 attr write error name={name} val={apid_names:?}: {e}"))?;
 
     // TODO: Get/compute N_Packet_Type_Count
     // Packet counts could be tracked as part of Rdr object
@@ -246,15 +210,10 @@ fn set_product_dataset_attrs(
         .new_attr::<f32>()
         .shape([1, 1])
         .create(name)
-        .map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        .map_err(|e| anyhow!("h5 attr create error name={name} val={val}: {e}"))?;
 
-    attr.write_raw(&[val]).map_err(|e| Error::Hdf5 {
-        name: format!("name={name} val={val}"),
-        msg: e.to_string(),
-    })?;
+    attr.write_raw(&[val])
+        .map_err(|e| anyhow!("h5 attr write error name={name} val={val}: {e}"))?;
 
     Ok(())
 }
@@ -268,10 +227,8 @@ fn write_rdr_to_dataproducts(
 ) -> Result<()> {
     let group_name = format!("Data_Products/{}", rdr.inner.product.short_name);
     if file.group(&group_name).is_err() {
-        file.create_group(&group_name).map_err(|e| Error::Hdf5 {
-            name: group_name,
-            msg: e.to_string(),
-        })?;
+        file.create_group(&group_name)
+            .map_err(|e| anyhow!("h5 group create error name={group_name}: {e}"))?;
     }
     let mut writer = hdfc::DataProductsRefWriter::default();
     let dataset_path = writer.write_ref(file, &rdr.inner, src_path)?;
@@ -311,10 +268,9 @@ fn write_aggr_group(
         return Ok(());
     }
     let name = format!("/Data_Products/{0}/{0}_Aggr", product.short_name);
-    let group = file.create_group(&name).map_err(|e| Error::Hdf5 {
-        name: name.to_string(),
-        msg: e.to_string(),
-    })?;
+    let group = file
+        .create_group(&name)
+        .map_err(|e| anyhow!("h5 group create error name={name}: {e}"))?;
 
     for (name, val) in [
         ("AggregateBeginningOrbitNumber", 0usize),
@@ -325,15 +281,10 @@ fn write_aggr_group(
             .new_attr::<usize>()
             .shape([1, 1])
             .create(name)
-            .map_err(|e| Error::Hdf5 {
-                name: format!("name={name} val={val}"),
-                msg: e.to_string(),
-            })?;
+            .map_err(|e| anyhow!("h5 attr create error name={name} val={val}: {e}"))?;
 
-        attr.write_raw(&[val]).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        attr.write_raw(&[val])
+            .map_err(|e| anyhow!("h5 attr write error name={name} val={val}: {e}"))?;
     }
 
     let mut start_rdr = &rdrs[0];
@@ -373,20 +324,13 @@ fn write_aggr_group(
             .new_attr::<VarLenAscii>()
             .shape([1, 1])
             .create(name)
-            .map_err(|e| Error::Hdf5 {
-                name: format!("name={name} val={val}"),
-                msg: e.to_string(),
-            })?;
+            .map_err(|e| anyhow!("h5 attr create error name={name} val={val}: {e}"))?;
 
-        let ascii = VarLenAscii::from_ascii(&val).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        let ascii = VarLenAscii::from_ascii(&val)
+            .map_err(|e| anyhow!("h5 attr ascii error name={name} val={val}: {e}"))?;
 
-        attr.write_raw(&[ascii]).map_err(|e| Error::Hdf5 {
-            name: format!("name={name} val={val}"),
-            msg: e.to_string(),
-        })?;
+        attr.write_raw(&[ascii])
+            .map_err(|e| anyhow!("h5 attr write error name={name} val={val}: {e}"))?;
     }
     Ok(())
 }
