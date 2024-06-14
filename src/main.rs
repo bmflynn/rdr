@@ -17,6 +17,8 @@ use crate::command_dump::dump;
 use crate::config::get_default_content;
 
 /// Tool for manipulating JPSS RDR HDF5 files.
+///
+/// Repository: <https://github.com/bmflynn/rdr>
 #[derive(Parser)]
 #[command(version, about, long_about, disable_help_subcommand = true)]
 struct Cli {
