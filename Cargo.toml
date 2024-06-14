@@ -15,7 +15,7 @@ hdf5 = { version = "0.8.1" }
 hdf5-src = { version = "0.8.1", features = ["threadsafe"] }
 hdf5-sys = { version = "0.8.1", features = ["static"] }
 ndarray = "0.15.6"
-ccsds = { path = "../ccsds-rs/lib" }
+ccsds = "0.1.0-beta.7"
 crossbeam = "0.8.4"
 lazy_static = "1.4.0"
 leap-seconds = "0.1.0"
@@ -26,3 +26,6 @@ tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0.59"
 tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }
 clap = { version = "4.5.7", features = ["derive"] }
+
+# [patch.crates-io]
+# ccsds = { path = "../ccsds-rs/lib" }

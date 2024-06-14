@@ -128,7 +128,9 @@ checksum = "96c51067fd44124faa7f870b4b1c969379ad32b2ba805aa959430ceaa384f695"
 
 [[package]]
 name = "ccsds"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67849efa9bff5e1d024ce35da62923d60cc410d6d8730dbb03c2ec2beb5d9e31"
 dependencies = [
  "crossbeam",
  "ndarray",
