@@ -2,9 +2,10 @@
 name = "rdr"
 version = "0.1.0-beta.1"
 edition = "2021"
+description = "JPSS HDF5 Raw-Data-Record (RDR) Utility"
 authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
-repository = "https://gitlab.ssec.wisc.edu/brucef/rdr"
-license-file = "LICENCE.txt"
+repository = "https://github.com/bmflynn/rdr"
+license-file = "LICENSE.txt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
