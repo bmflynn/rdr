@@ -10,14 +10,18 @@ use ndarray::arr1;
 use crate::{
     config::{Config, ProductSpec, SatSpec},
     prelude::*,
-    rdr::Rdr,
+    rdr::{Rdr, RdrWriter},
 };
 
 /// The business-end of writing RDRs
 ///
 /// # Errors
 /// All errors creating or wri
-pub fn write_hdf5(config: &Config, rdrs: &[Rdr], dest: &Path) -> crate::error::Result<PathBuf> {
+pub fn write_hdf5(
+    config: &Config,
+    rdrs: &[RdrWriter],
+    dest: &Path,
+) -> crate::error::Result<PathBuf> {
     let primary = &rdrs[0];
     let packed = &rdrs[1..];
 
@@ -25,17 +29,17 @@ pub fn write_hdf5(config: &Config, rdrs: &[Rdr], dest: &Path) -> crate::error::R
         &config.satellite,
         &config.origin,
         &config.mode,
-        primary,
+        &primary.inner,
     ));
 
     let mut file = File::create(&fpath).with_context(|| format!("opening {fpath:?}"))?;
 
-    set_global_attrs(config, &mut file, &primary.created).context("setting global attrs")?;
+    set_global_attrs(config, &mut file, &primary.inner.created).context("setting global attrs")?;
 
     // Handle the primary RDR
     let path = write_rdr_to_alldata(&file, 0, primary)?;
     write_rdr_to_dataproducts(&file, config, primary, &path)?;
-    write_aggr_group(&file, &config.satellite, rdrs, &primary.product)?;
+    write_aggr_group(&file, &config.satellite, rdrs, &primary.inner.product)?;
 
     // Handle the packed products
     if !packed.is_empty() {
@@ -43,7 +47,7 @@ pub fn write_hdf5(config: &Config, rdrs: &[Rdr], dest: &Path) -> crate::error::R
             let path = write_rdr_to_alldata(&file, idx, rdr)?;
             write_rdr_to_dataproducts(&file, config, rdr, &path)?;
         }
-        write_aggr_group(&file, &config.satellite, packed, &packed[0].product)?;
+        write_aggr_group(&file, &config.satellite, packed, &packed[0].inner.product)?;
     }
 
     Ok(fpath)
@@ -113,7 +117,7 @@ fn set_global_attrs(config: &Config, file: &mut File, created: &DateTime<Utc>) -
     Ok(())
 }
 
-fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<String> {
+fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &RdrWriter) -> Result<String> {
     if file.group("All_Data").is_err() {
         file.create_group("All_Data").map_err(|e| Error::Hdf5 {
             name: "All_Data".to_string(),
@@ -122,7 +126,7 @@ fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<Strin
     }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
-        rdr.product.short_name
+        rdr.inner.product.short_name
     );
     file.new_dataset_builder()
         .with_data(&arr1(&rdr.compile()[..]))
@@ -259,10 +263,10 @@ fn set_product_dataset_attrs(
 fn write_rdr_to_dataproducts(
     file: &File,
     config: &Config,
-    rdr: &Rdr,
+    rdr: &RdrWriter,
     src_path: &str,
 ) -> Result<()> {
-    let group_name = format!("Data_Products/{}", rdr.product.short_name);
+    let group_name = format!("Data_Products/{}", rdr.inner.product.short_name);
     if file.group(&group_name).is_err() {
         file.create_group(&group_name).map_err(|e| Error::Hdf5 {
             name: group_name,
@@ -270,9 +274,9 @@ fn write_rdr_to_dataproducts(
         })?;
     }
     let mut writer = hdfc::DataProductsRefWriter::default();
-    let dataset_path = writer.write_ref(file, rdr, src_path)?;
+    let dataset_path = writer.write_ref(file, &rdr.inner, src_path)?;
 
-    set_product_dataset_attrs(file, config, rdr, &dataset_path)?;
+    set_product_dataset_attrs(file, config, &rdr.inner, &dataset_path)?;
 
     Ok(())
 }
@@ -297,7 +301,12 @@ fn granule_id(sat: &SatSpec, rdr: &Rdr) -> String {
     )
 }
 
-fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductSpec) -> Result<()> {
+fn write_aggr_group(
+    file: &File,
+    sat: &SatSpec,
+    rdrs: &[RdrWriter],
+    product: &ProductSpec,
+) -> Result<()> {
     if rdrs.is_empty() {
         return Ok(());
     }
@@ -330,15 +339,15 @@ fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductS
     let mut start_rdr = &rdrs[0];
     let mut end_rdr = &rdrs[rdrs.len() - 1];
     for rdr in rdrs {
-        if rdr.granule_utc > start_rdr.granule_utc {
+        if rdr.inner.granule_utc > start_rdr.inner.granule_utc {
             start_rdr = rdr;
         }
-        if rdr.granule_utc < end_rdr.granule_utc {
+        if rdr.inner.granule_utc < end_rdr.inner.granule_utc {
             end_rdr = rdr;
         }
     }
-    let start_dt = granule_dt(start_rdr.granule_utc);
-    let end_dt = granule_dt(end_rdr.granule_utc);
+    let start_dt = granule_dt(start_rdr.inner.granule_utc);
+    let end_dt = granule_dt(end_rdr.inner.granule_utc);
 
     for (name, val) in [
         (
@@ -349,13 +358,16 @@ fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductS
             "AggregateBeginningTime",
             start_dt.format("%H:%M:%S.%fZ").to_string(),
         ),
-        ("AggregateBeginningGranuleID", granule_id(sat, start_rdr)),
+        (
+            "AggregateBeginningGranuleID",
+            granule_id(sat, &start_rdr.inner),
+        ),
         ("AggregateEndingDate", end_dt.format("%Y%m%d").to_string()),
         (
             "AggregateEndingTime",
             end_dt.format("%H:%M:%S.%fZ").to_string(),
         ),
-        ("AggregateEndingGranuleID", granule_id(sat, end_rdr)),
+        ("AggregateEndingGranuleID", granule_id(sat, &end_rdr.inner)),
     ] {
         let attr = group
             .new_attr::<VarLenAscii>()
@@ -386,7 +398,7 @@ mod tests {
     mod filename {
         use std::collections::{HashMap, VecDeque};
 
-        use crate::{config::get_default, rdr::StaticHeader};
+        use crate::{config::get_default, rdr::Rdr, rdr::StaticHeader};
 
         use super::*;
 

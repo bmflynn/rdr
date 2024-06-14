@@ -8,9 +8,9 @@ use std::{
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hdf5::{File as H5File, Group};
-use ndarray::s;
+use rdr::rdr::{ApidInfo, PacketTracker, StaticHeader};
 use tempfile::TempDir;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 const SUPPORTED_SENSORS: [&str; 4] = ["VIIRS", "CRIS", "ATMS", "OMPS"];
 
@@ -41,6 +41,8 @@ fn dataset_name(scid: u8, type_: &DatasetType, created: DateTime<Utc>) -> String
     }
 }
 
+const NO_PACKETS_RECEIVED: i32 = -1;
+
 /// Dump the Common RDR Application Packets Storage to a file.
 fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<PathBuf>> {
     let mut files = Vec::default();
@@ -51,35 +53,47 @@ fn dump_datasets_to(workdir: &Path, path: &str, group: &Group) -> Result<Vec<Pat
         .iter()
         .enumerate()
     {
-        let bytes = dataset.read_1d::<u8>().context("Reading data")?;
-        debug!("{path} dimension {}", bytes.dim());
-
-        let ap_offset = {
-            let x = bytes
-                .slice(s![48..52])
-                .to_slice()
-                .context("getting static header apStorageOffset")?;
-            u32::from_be_bytes([x[0], x[1], x[2], x[3]])
-        };
-        let ap_end = {
-            let x = bytes
-                .slice(s![52..56])
-                .to_slice()
-                .context("getting static header nextPktPos")?;
-            u32::from_be_bytes([x[0], x[1], x[2], x[3]])
-        };
-
-        debug!("{path} packet data apStorageOffset={ap_offset} nextPktPos={ap_end}");
-        let packet_data = bytes
-            .slice(s![ap_offset as usize..ap_end as usize])
-            .to_slice()
-            .context("reading packet data")?;
-
         let destpath = workdir
             .join(path.replace('/', "::"))
             .with_extension(format!("{idx}"));
         debug!("writing to {destpath:?}");
-        fs::write(&destpath, packet_data).with_context(|| format!("Writing to {destpath:?}"))?;
+        let mut file = File::create(&destpath).context("opening packet dest file")?;
+
+        // The whole common RDR as bytes
+        let bytes = dataset.read_1d::<u8>().context("Reading data")?;
+        let data = bytes.as_slice().context("converting to slice")?;
+
+        let header = StaticHeader::from_bytes(data).context("decoding static header")?;
+        trace!("{header:?}");
+
+        let start = header.apid_list_offset as usize;
+        let end = start + ApidInfo::LEN * usize::try_from(header.num_apids)?;
+        let apids = ApidInfo::all_from_bytes(&data[start..end]).context("decoding apidlist")?;
+
+        debug!("{path} num_apids={}", apids.len());
+
+        for apid in &apids {
+            debug!(
+                "reading {}({}) pkts_received={}",
+                apid.name, apid.value, apid.pkts_received
+            );
+            trace!("{:?}", apid);
+
+            let mut tracker_offset = header.pkt_tracker_offset as usize
+                + apid.pkt_tracker_start_idx as usize * PacketTracker::LEN;
+            for _ in 0..apid.pkts_received {
+                let tracker = PacketTracker::from_bytes(&data[tracker_offset..])
+                    .context("decoding packet tracker")?;
+                trace!("{:?}", tracker);
+                tracker_offset += PacketTracker::LEN;
+                if tracker.offset == NO_PACKETS_RECEIVED {
+                    break;
+                }
+                let start = header.ap_storage_offset as usize + usize::try_from(tracker.offset)?;
+                let end = start + usize::try_from(tracker.size)?;
+                file.write_all(&data[start..end])?;
+            }
+        }
 
         files.push(destpath.clone());
     }

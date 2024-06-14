@@ -85,7 +85,12 @@ fn main() -> Result<()> {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     tracing_subscriber::registry()
-        .with(fmt::layer().with_target(false).without_time())
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .without_time()
+                .with_ansi(false),
+        )
         .with(EnvFilter::from_env("RDR_LOG"))
         .init();
 

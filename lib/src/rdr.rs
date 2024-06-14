@@ -1,10 +1,42 @@
-use anyhow::Context;
+use anyhow::{bail, Context, Result};
 use ccsds::{Apid, Packet};
 use chrono::{DateTime, Utc};
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
 };
+
+macro_rules! from_bytes4 {
+    ($type:ty, $dat:ident, $start:expr) => {
+        <$type>::from_be_bytes([
+            $dat[$start],
+            $dat[$start + 1],
+            $dat[$start + 2],
+            $dat[$start + 3],
+        ])
+    };
+}
+
+macro_rules! from_bytes8 {
+    ($type:ty, $dat:ident, $start:expr) => {
+        <$type>::from_be_bytes([
+            $dat[$start],
+            $dat[$start + 1],
+            $dat[$start + 2],
+            $dat[$start + 3],
+            $dat[$start + 4],
+            $dat[$start + 5],
+            $dat[$start + 6],
+            $dat[$start + 7],
+        ])
+    };
+}
+
+macro_rules! to_str {
+    ($data:expr) => {
+        std::str::from_utf8($data)?.trim_matches('\0').to_owned()
+    };
+}
 
 use crate::config::{ProductSpec, SatSpec};
 
@@ -21,7 +53,7 @@ pub struct Rdr {
     /// Common RDR static header
     pub header: StaticHeader,
     /// Common RDR ``ApidLists`` for each apid
-    pub apids: HashMap<Apid, ApidList>,
+    pub apids: HashMap<Apid, ApidInfo>,
     /// Common RDR ``PacketTrackers`` for each apid
     pub trackers: HashMap<Apid, Vec<PacketTracker>>,
     /// Common RDR packet storage area
@@ -32,6 +64,32 @@ pub struct Rdr {
 
 impl Rdr {
     #[must_use]
+    pub fn granule_dt(&self) -> DateTime<Utc> {
+        let start_ns = i64::try_from(self.granule_utc * 1000).unwrap_or(0);
+        DateTime::from_timestamp_nanos(start_ns)
+    }
+}
+
+impl Display for Rdr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Rdr{{product={} granule=({}, {})}}",
+            self.product.short_name,
+            self.granule_dt(),
+            self.granule_time
+        )
+    }
+}
+
+/// Wraps and ``Rdr`` for the purposes of writing.
+#[derive(Clone)]
+pub struct RdrWriter {
+    pub inner: Rdr,
+}
+
+impl RdrWriter {
+    #[must_use]
     pub fn new(
         gran_utc: u64,
         gran_iet: u64,
@@ -39,7 +97,7 @@ impl Rdr {
         product: &ProductSpec,
         packed_with: Vec<String>,
     ) -> Self {
-        let mut rdr = Self {
+        let mut rdr = Rdr {
             product: product.clone(),
             packed_with,
             granule_time: gran_iet,
@@ -54,7 +112,7 @@ impl Rdr {
         for apid in &product.apids {
             rdr.apids.insert(
                 apid.num,
-                ApidList {
+                ApidInfo {
                     name: apid.name.clone(),
                     value: u32::from(apid.num),
                     pkt_tracker_start_idx: 0,
@@ -65,11 +123,11 @@ impl Rdr {
             rdr.trackers.insert(apid.num, Vec::default());
         }
 
-        rdr
+        Self { inner: rdr }
     }
 
     fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
-        let trackers = self.trackers.entry(pkt.header.apid).or_default();
+        let trackers = self.inner.trackers.entry(pkt.header.apid).or_default();
         let offset = match trackers.last() {
             Some(t) => t.offset + t.size,
             None => 0,
@@ -94,9 +152,10 @@ impl Rdr {
             })
             .expect("apid to be present because we already checked for it");
         let apid_list = self
+            .inner
             .apids
             .entry(pkt.header.apid)
-            .or_insert_with(|| ApidList {
+            .or_insert_with(|| ApidInfo {
                 name: apid.name,
                 value: u32::from(apid.num),
                 pkt_tracker_start_idx: 0,
@@ -114,18 +173,18 @@ impl Rdr {
     pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet, product: &ProductSpec) {
         self.add_tracker(gran_iet, &pkt);
         self.update_apid_list(product, &pkt);
-        self.storage.push_back(pkt);
+        self.inner.storage.push_back(pkt);
 
         // Update static header dynamic offsets
-        self.header.pkt_tracker_offset =
-            u32::try_from(StaticHeader::LEN + ApidList::LEN * self.apids.len()).unwrap();
-        let num_trackers: usize = self.trackers.values().map(Vec::len).sum();
-        self.header.ap_storage_offset = u32::try_from(
-            self.header.pkt_tracker_offset as usize + PacketTracker::LEN * num_trackers,
+        self.inner.header.pkt_tracker_offset =
+            u32::try_from(StaticHeader::LEN + ApidInfo::LEN * self.inner.apids.len()).unwrap();
+        let num_trackers: usize = self.inner.trackers.values().map(Vec::len).sum();
+        self.inner.header.ap_storage_offset = u32::try_from(
+            self.inner.header.pkt_tracker_offset as usize + PacketTracker::LEN * num_trackers,
         )
         .unwrap();
-        let num_packet_bytes: usize = self.storage.iter().map(|p| p.data.len()).sum();
-        self.header.next_pkt_position = u32::try_from(num_packet_bytes).unwrap();
+        let num_packet_bytes: usize = self.inner.storage.iter().map(|p| p.data.len()).sum();
+        self.inner.header.next_pkt_position = u32::try_from(num_packet_bytes).unwrap();
     }
 
     /// Compile this RDR into its byte representation.
@@ -136,9 +195,9 @@ impl Rdr {
     pub fn compile(&self) -> Vec<u8> {
         let mut dat = Vec::new();
         // Static header should be good-to-go because it's updated on every call to add_packet
-        dat.extend_from_slice(&self.header.as_bytes());
+        dat.extend_from_slice(&self.inner.header.as_bytes());
 
-        let apids: Vec<u16> = self.product.apids.iter().map(|p| p.num).collect();
+        let apids: Vec<u16> = self.inner.product.apids.iter().map(|p| p.num).collect();
         // let mut apids: Vec<u16> = self.apids.keys().copied().collect();
         // apids.sort_unstable();
 
@@ -146,43 +205,25 @@ impl Rdr {
         let mut tracker_start_idx: u32 = 0;
         for apid in &apids {
             // update the list with current information regarding packet tracker config
-            let mut list = self.apids.get(apid).unwrap().clone();
+            let mut list = self.inner.apids.get(apid).unwrap().clone();
             list.pkt_tracker_start_idx = tracker_start_idx;
             dat.extend_from_slice(&list.as_bytes());
             // Assume tracker and lists have the same apids, and since we're handing apids in
             // order can can just use the num trackers for this apid
-            tracker_start_idx += u32::try_from(self.trackers[apid].len()).unwrap();
+            tracker_start_idx += u32::try_from(self.inner.trackers[apid].len()).unwrap();
         }
 
         for apid in apids {
-            for tracker in &self.trackers[&apid] {
+            for tracker in &self.inner.trackers[&apid] {
                 dat.extend_from_slice(&tracker.as_bytes());
             }
         }
 
-        for pkt in &self.storage {
+        for pkt in &self.inner.storage {
             dat.extend_from_slice(&pkt.data);
         }
 
         dat
-    }
-
-    #[must_use]
-    pub fn granule_dt(&self) -> DateTime<Utc> {
-        let start_ns = i64::try_from(self.granule_utc * 1000).unwrap_or(0);
-        DateTime::from_timestamp_nanos(start_ns)
-    }
-}
-
-impl Display for Rdr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Rdr{{product={} granule=({}, {})}}",
-            self.product.short_name,
-            self.granule_dt(),
-            self.granule_time
-        )
     }
 }
 
@@ -219,6 +260,27 @@ impl StaticHeader {
         }
     }
 
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < StaticHeader::LEN {
+            bail!("not enough bytes");
+        }
+        let rdr = Self {
+            satellite: to_str!(&data[0..4]),
+            sensor: to_str!(&data[4..20]),
+            type_id: to_str!(&data[20..36]),
+            num_apids: from_bytes4!(u32, data, 36),
+            apid_list_offset: from_bytes4!(u32, data, 40),
+            pkt_tracker_offset: from_bytes4!(u32, data, 44),
+            ap_storage_offset: from_bytes4!(u32, data, 48),
+            next_pkt_position: from_bytes4!(u32, data, 52),
+            start_boundary: from_bytes8!(i64, data, 56),
+            end_boundary: from_bytes8!(i64, data, 64),
+        };
+
+        Ok(rdr)
+    }
+
+    #[must_use]
     pub fn as_bytes(&self) -> [u8; Self::LEN] {
         let mut buf = [0u8; Self::LEN];
         copy_with_len(&mut buf[..4], self.satellite.as_bytes(), 4);
@@ -236,8 +298,9 @@ impl StaticHeader {
     }
 }
 
-#[derive(Clone)]
-pub struct ApidList {
+/// Entry in the APID List.
+#[derive(Debug, Clone)]
+pub struct ApidInfo {
     pub name: String,
     pub value: u32,
     pub pkt_tracker_start_idx: u32,
@@ -245,8 +308,10 @@ pub struct ApidList {
     pub pkts_received: u32,
 }
 
-impl ApidList {
+impl ApidInfo {
     pub const LEN: usize = 32;
+
+    #[must_use]
     pub fn as_bytes(&self) -> [u8; Self::LEN] {
         let mut buf = [0u8; Self::LEN];
         copy_with_len(&mut buf[..16], self.name.as_bytes(), 16);
@@ -257,9 +322,33 @@ impl ApidList {
 
         buf
     }
+
+    #[must_use]
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < ApidInfo::LEN {
+            bail!("not enough bytes");
+        }
+        let info = Self {
+            name: to_str!(&data[0..16]),
+            value: from_bytes4!(u32, data, 16),
+            pkt_tracker_start_idx: from_bytes4!(u32, data, 20),
+            pkts_reserved: from_bytes4!(u32, data, 24),
+            pkts_received: from_bytes4!(u32, data, 28),
+        };
+
+        Ok(info)
+    }
+
+    #[must_use]
+    pub fn all_from_bytes(data: &[u8]) -> Result<Vec<Self>> {
+        Ok(data
+            .chunks(ApidInfo::LEN)
+            .filter_map(|chunk| Self::from_bytes(chunk).ok())
+            .collect::<Vec<Self>>())
+    }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PacketTracker {
     pub obs_time: i64,
     pub sequence_number: i32,
@@ -271,6 +360,7 @@ pub struct PacketTracker {
 impl PacketTracker {
     pub const LEN: usize = 24;
 
+    #[must_use]
     pub fn as_bytes(&self) -> [u8; Self::LEN] {
         let mut buf = [0u8; Self::LEN];
         buf[0..8].copy_from_slice(&self.obs_time.to_be_bytes());
@@ -281,13 +371,29 @@ impl PacketTracker {
 
         buf
     }
+
+    #[must_use]
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < PacketTracker::LEN {
+            bail!("not enough bytes");
+        }
+        let tracker = Self {
+            obs_time: from_bytes8!(i64, data, 0),
+            sequence_number: from_bytes4!(i32, data, 8),
+            size: from_bytes4!(i32, data, 12),
+            offset: from_bytes4!(i32, data, 16),
+            fill_percent: from_bytes4!(i32, data, 20),
+        };
+
+        Ok(tracker)
+    }
 }
 
 fn copy_with_len<'a>(dst: &'a mut [u8], src: &'a [u8], len: usize) {
     if src.len() < len {
         dst[..src.len()].copy_from_slice(src);
-        for i in src.len()..len {
-            dst[i] = 0;
+        for x in dst.iter_mut().skip(src.len()).take(len) {
+            *x = 0;
         }
     } else {
         dst[..len].copy_from_slice(&src[..len]);

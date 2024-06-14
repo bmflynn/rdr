@@ -71,12 +71,12 @@ pub fn create(
             for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(groups, decode_iet) {
                 let complete = collector.add(pkt_utc, pkt_iet, pkt);
                 if let Some(rdrs) = complete {
-                    debug!("collected {}", rdrs[0]);
+                    debug!("collected {}", &rdrs[0].inner);
                     let _ = tx.send(rdrs);
                 }
             }
             for rdrs in collector.finish() {
-                debug!("collected {}", rdrs[0]);
+                debug!("collected {}", &rdrs[0].inner);
                 let _ = tx.send(rdrs);
             }
         });
@@ -84,9 +84,9 @@ pub fn create(
         s.spawn(move || {
             for rdrs in rx {
                 match write_hdf5(&config, &rdrs, &dest).context("writing h5") {
-                    Ok(fpath) => info!("wrote {} to {fpath:?}", rdrs[0]),
+                    Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0].inner),
                     Err(err) => {
-                        error!("failed writing {}: {err}", rdrs[0],);
+                        error!("failed writing {}: {err}", &rdrs[0].inner);
                     }
                 };
             }
