@@ -9,7 +9,7 @@ mod writer;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use std::{
-    io::{stdout, Write},
+    io::{stderr, stdout, Write},
     path::PathBuf,
 };
 
@@ -92,16 +92,12 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .without_time()
-                .with_ansi(false),
-        )
-        .with(EnvFilter::from_env("RDR_LOG"))
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_writer(stderr)
+        .with_ansi(false)
+        .without_time()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_env("RDR_LOG"))
         .init();
 
     let cli = Cli::parse();
