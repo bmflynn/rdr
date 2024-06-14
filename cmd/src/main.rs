@@ -14,7 +14,7 @@ use crate::command_dump::dump;
 
 /// Tool for manipulating JPSS RDR HDF5 files.
 #[derive(Parser)]
-#[command(version, about, long_about)]
+#[command(version, about, long_about, disable_help_subcommand=true)]
 struct Cli {
     #[command(subcommand)]
     commands: Commands,
@@ -32,7 +32,7 @@ fn parse_valid_satellite(sat: &str) -> Result<String, String> {
 #[derive(Args)]
 #[group(multiple = false, required = true)]
 struct Configs {
-    /// Use the build-in default configuration for this satellite id; one of npp, j01, j02, or j03.
+    /// Use the built-in default configuration for this satellite id; one of npp, j01, j02, or j03.
     #[arg(short, long, value_name = "name", value_parser=parse_valid_satellite)]
     satellite: Option<String>,
 
@@ -67,7 +67,7 @@ enum Commands {
         #[arg(short, long, value_name = "path")]
         input: Vec<PathBuf>,
     },
-    /// Extract the spacespacet data contained in the RDR.
+    /// Extract the spacepacket data contained in the RDR.
     Dump {
         /// One or more RDR file
         #[arg(short, long, value_name = "path")]
