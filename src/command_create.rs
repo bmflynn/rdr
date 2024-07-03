@@ -13,7 +13,7 @@ use std::{
     thread,
 };
 use tempfile::TempDir;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Config> {
     match satellite {
@@ -84,6 +84,8 @@ pub fn merge<P: AsRef<Path>>(paths: &[P], dest: P) -> Result<()> {
     )
 }
 
+const LEAPSEC_DOWNLOAD_URL: &str = "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list";
+
 pub fn create(
     satellite: Option<String>,
     config: Option<PathBuf>,
@@ -100,6 +102,13 @@ pub fn create(
 
     let leaps = LeapSecs::new(leap_seconds.as_deref()).context("creating leapsecs db")?;
     info!("leap seconds {leaps}");
+    if leaps.expired {
+        warn!(
+            "leap seconds db is expired. Consider downloading an updated \
+               one from the following URL and providing the --leap-seconds <path> flag: {}",
+            LEAPSEC_DOWNLOAD_URL
+        );
+    }
 
     // Get single input, merging multiple inputs if necessary
     let mut tmpdir: Option<TempDir> = None;

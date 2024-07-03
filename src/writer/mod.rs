@@ -20,6 +20,18 @@ pub fn write_hdf5(config: &Config, rdrs: &[RdrWriter], dest: &Path) -> Result<Pa
     let primary = &rdrs[0];
     let packed = &rdrs[1..];
 
+    // Find the product for the primary RDR
+    let product = config
+        .products
+        .iter()
+        .find(|&p| p.product_id == primary.inner.product_id)
+        .with_context(|| {
+            format!(
+                "product for primary rdr {} not found in config",
+                &primary.inner.product_id
+            )
+        })?;
+
     let fpath = dest.join(filename(
         &config.satellite,
         &config.origin,
@@ -32,17 +44,17 @@ pub fn write_hdf5(config: &Config, rdrs: &[RdrWriter], dest: &Path) -> Result<Pa
     set_global_attrs(config, &mut file, &primary.inner.created).context("setting global attrs")?;
 
     // Handle the primary RDR
-    let path = write_rdr_to_alldata(&file, 0, primary)?;
-    write_rdr_to_dataproducts(&file, config, primary, &path)?;
-    write_aggr_group(&file, &config.satellite, rdrs, &primary.inner.product)?;
+    let path = write_rdr_to_alldata(&file, 0, primary, product)?;
+    write_rdr_to_dataproducts(&file, config, primary, product, &path)?;
+    write_aggr_group(&file, &config.satellite, rdrs, product)?;
 
     // Handle the packed products
     if !packed.is_empty() {
         for (idx, rdr) in packed.iter().enumerate() {
-            let path = write_rdr_to_alldata(&file, idx, rdr)?;
-            write_rdr_to_dataproducts(&file, config, rdr, &path)?;
+            let path = write_rdr_to_alldata(&file, idx, rdr, product)?;
+            write_rdr_to_dataproducts(&file, config, rdr, product, &path)?;
         }
-        write_aggr_group(&file, &config.satellite, packed, &packed[0].inner.product)?;
+        write_aggr_group(&file, &config.satellite, packed, product)?;
     }
 
     Ok(fpath)
@@ -58,14 +70,11 @@ fn attr_time(dt: &DateTime<Utc>) -> String {
 
 /// Create an IDPS style RDR filename
 fn filename(sat: &SatSpec, origin: &str, mode: &str, rdr: &Rdr) -> String {
-    let mut product_ids = [
-        vec![rdr.product.product_id.clone()],
-        rdr.packed_with.clone(),
-    ]
-    .concat();
+    let mut product_ids = [vec![rdr.product_id.clone()], rdr.packed_with.clone()].concat();
     product_ids.sort();
 
-    let (start, end) = granule_dt_range(rdr);
+    let start = granule_dt(rdr.begin_time_utc);
+    let end = granule_dt(rdr.end_time_utc);
 
     format!(
         "{}_{}_d{}_t{}_e{}_c{}_{}u_{}.h5",
@@ -105,14 +114,19 @@ fn set_global_attrs(config: &Config, file: &mut File, created: &DateTime<Utc>) -
     Ok(())
 }
 
-fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &RdrWriter) -> Result<String> {
+fn write_rdr_to_alldata(
+    file: &File,
+    gran_idx: usize,
+    rdr: &RdrWriter,
+    product: &ProductSpec,
+) -> Result<String> {
     if file.group("All_Data").is_err() {
         file.create_group("All_Data")
             .map_err(|e| anyhow!("h5 group create error name=All_Data: {e}"))?;
     }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
-        rdr.inner.product.short_name
+        product.short_name
     );
     file.new_dataset_builder()
         .with_data(&arr1(&rdr.compile()[..]))
@@ -126,6 +140,7 @@ fn set_product_dataset_attrs(
     file: &File,
     config: &Config,
     rdr: &Rdr,
+    product: &ProductSpec,
     dataset_path: &str,
 ) -> Result<()> {
     let (start_dt, end_dt) = granule_dt_range(rdr);
@@ -149,7 +164,7 @@ fn set_product_dataset_attrs(
         ("N_Primary_Label", "Primary".to_string()),
         (
             "N_Reference_ID",
-            format!("{}:{}:{}", rdr.product.short_name, gran_id, ver),
+            format!("{}:{}:{}", product.short_name, gran_id, ver),
         ),
         ("N_Granule_ID", gran_id),
         ("N_IDPS_Mode", config.mode.clone()),
@@ -170,8 +185,8 @@ fn set_product_dataset_attrs(
 
     for (name, val) in [
         ("N_Beginning_Orbit_Number", 0),
-        ("N_Beginning_Time_IET", rdr.granule_time),
-        ("N_Ending_Time_IET", rdr.granule_time + rdr.product.gran_len),
+        ("N_Beginning_Time_IET", rdr.begin_time_iet),
+        ("N_Ending_Time_IET", rdr.begin_time_iet + product.gran_len),
     ] {
         let attr = dataset
             .new_attr::<u64>()
@@ -184,7 +199,7 @@ fn set_product_dataset_attrs(
     }
 
     let name = "N_Packet_Type";
-    let apid_names: Vec<String> = rdr.product.apids.iter().map(|a| a.name.clone()).collect();
+    let apid_names: Vec<String> = product.apids.iter().map(|a| a.name.clone()).collect();
     let mut pkt_type_arr: Vec<VarLenAscii> = Vec::default();
     for (i, x) in apid_names.iter().enumerate() {
         let ascii = VarLenAscii::from_ascii(x.as_bytes())
@@ -218,22 +233,22 @@ fn set_product_dataset_attrs(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn write_rdr_to_dataproducts(
     file: &File,
     config: &Config,
     rdr: &RdrWriter,
+    product: &ProductSpec,
     src_path: &str,
 ) -> Result<()> {
-    let group_name = format!("Data_Products/{}", rdr.inner.product.short_name);
+    let group_name = format!("Data_Products/{}", product.short_name);
     if file.group(&group_name).is_err() {
         file.create_group(&group_name)
             .map_err(|e| anyhow!("h5 group create error name={group_name}: {e}"))?;
     }
     let mut writer = hdfc::DataProductsRefWriter::default();
-    let dataset_path = writer.write_ref(file, &rdr.inner, src_path)?;
+    let dataset_path = writer.write_ref(file, product, src_path)?;
 
-    set_product_dataset_attrs(file, config, &rdr.inner, &dataset_path)?;
+    set_product_dataset_attrs(file, config, &rdr.inner, product, &dataset_path)?;
 
     Ok(())
 }
@@ -244,17 +259,14 @@ fn granule_dt(utc: u64) -> DateTime<Utc> {
 }
 
 fn granule_dt_range(rdr: &Rdr) -> (DateTime<Utc>, DateTime<Utc>) {
-    (
-        granule_dt(rdr.granule_utc),
-        granule_dt(rdr.granule_utc + rdr.product.gran_len * 100),
-    )
+    (granule_dt(rdr.begin_time_utc), granule_dt(rdr.end_time_utc))
 }
 
 fn granule_id(sat: &SatSpec, rdr: &Rdr) -> String {
     format!(
         "{}{:012}",
         sat.id.to_uppercase(),
-        (rdr.granule_time - sat.base_time) / 100_000
+        (rdr.begin_time_iet - sat.base_time) / 100_000
     )
 }
 
@@ -290,15 +302,15 @@ fn write_aggr_group(
     let mut start_rdr = &rdrs[0];
     let mut end_rdr = &rdrs[rdrs.len() - 1];
     for rdr in rdrs {
-        if rdr.inner.granule_utc > start_rdr.inner.granule_utc {
+        if rdr.inner.begin_time_utc > start_rdr.inner.begin_time_utc {
             start_rdr = rdr;
         }
-        if rdr.inner.granule_utc < end_rdr.inner.granule_utc {
+        if rdr.inner.begin_time_utc < end_rdr.inner.begin_time_utc {
             end_rdr = rdr;
         }
     }
-    let start_dt = granule_dt(start_rdr.inner.granule_utc);
-    let end_dt = granule_dt(end_rdr.inner.granule_utc);
+    let start_dt = granule_dt(start_rdr.inner.begin_time_utc);
+    let end_dt = granule_dt(end_rdr.inner.end_time_utc);
 
     for (name, val) in [
         (
@@ -366,10 +378,12 @@ mod tests {
                 "origin",
                 "mode",
                 &Rdr {
-                    product: primary.clone(),
+                    product_id: primary.product_id.clone(),
                     packed_with: vec!["RNSCA".to_string()],
-                    granule_time: u64::try_from(dt.timestamp_micros()).unwrap(),
-                    granule_utc: u64::try_from(dt.timestamp_micros()).unwrap(),
+                    begin_time_iet: dt.timestamp_micros() as u64,
+                    end_time_iet: dt.timestamp_micros() as u64 + primary.gran_len,
+                    begin_time_utc: dt.timestamp_micros() as u64,
+                    end_time_utc: dt.timestamp_micros() as u64 + primary.gran_len,
                     header: StaticHeader::default(),
                     apids: HashMap::default(),
                     trackers: HashMap::default(),
@@ -402,10 +416,12 @@ mod tests {
                 "origin",
                 "mode",
                 &Rdr {
-                    product: primary.clone(),
+                    product_id: primary.product_id.clone(),
                     packed_with: Vec::default(),
-                    granule_time: dt.timestamp_micros() as u64,
-                    granule_utc: dt.timestamp_micros() as u64,
+                    begin_time_iet: dt.timestamp_micros() as u64,
+                    end_time_iet: dt.timestamp_micros() as u64 + primary.gran_len,
+                    begin_time_utc: dt.timestamp_micros() as u64,
+                    end_time_utc: dt.timestamp_micros() as u64 + primary.gran_len,
                     header: StaticHeader::default(),
                     apids: HashMap::default(),
                     trackers: HashMap::default(),

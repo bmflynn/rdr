@@ -1,9 +1,16 @@
 use anyhow::{bail, Context, Result};
 use ccsds::{Apid, Packet};
 use chrono::{DateTime, Utc};
+use hdf5::{
+    types::{FixedAscii, VarLenAscii},
+    Dataset, Group,
+};
+use ndarray::Dim;
+use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
+    path::Path,
 };
 
 macro_rules! from_bytes4 {
@@ -38,18 +45,23 @@ macro_rules! to_str {
     };
 }
 
-use crate::config::{ProductSpec, SatSpec};
+use crate::config::{ApidSpec, ProductSpec, SatSpec};
 
+/// Common RDR data structures and metadata.
 #[derive(Clone)]
 pub struct Rdr {
-    /// The product for this rdr
-    pub product: ProductSpec,
+    /// The short product id for this rdr, e.g., RVIRS
+    pub product_id: String,
     /// Any other products that are packed with this rdr, .e.g., RNSCA
     pub packed_with: Vec<String>,
     /// Granule time in IET microseconds
-    pub granule_time: u64,
-    /// Granule time in UTC microseconds
-    pub granule_utc: u64,
+    pub begin_time_iet: u64,
+    /// Granule time in IET microseconds
+    pub end_time_iet: u64,
+    /// Granule time in IET microseconds
+    pub begin_time_utc: u64,
+    /// Granule time in IET microseconds
+    pub end_time_utc: u64,
     /// Common RDR static header
     pub header: StaticHeader,
     /// Common RDR ``ApidLists`` for each apid
@@ -65,27 +77,199 @@ pub struct Rdr {
 impl Rdr {
     #[must_use]
     pub fn granule_dt(&self) -> DateTime<Utc> {
-        let start_ns = i64::try_from(self.granule_utc * 1000).unwrap_or(0);
+        let start_ns = i64::try_from(self.begin_time_utc * 1000).unwrap_or(0);
         DateTime::from_timestamp_nanos(start_ns)
     }
 }
+
+const MAX_STR_LEN: usize = 1024;
 
 impl Display for Rdr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "Rdr{{product={} granule=({}, {})}}",
-            self.product.short_name,
+            self.product_id,
             self.granule_dt(),
-            self.granule_time
+            self.begin_time_iet
         )
     }
 }
 
-/// Wraps and ``Rdr`` for the purposes of writing.
+macro_rules! attr_string {
+    ($obj:expr, $name:expr) => {
+        $obj.attr($name)
+            .with_context(|| format!("lookup attr {}", $name))?
+            .read_2d::<FixedAscii<MAX_STR_LEN>>()
+            .with_context(|| format!("reading {} string attribute", $name))?[[0, 0]]
+        .to_string()
+    };
+}
+
+macro_rules! attr_u64 {
+    ($obj:expr, $name:expr) => {
+        $obj.attr($name)
+            .with_context(|| format!("lookup attr {}", $name))?
+            .read_2d::<u64>()
+            .with_context(|| format!("read u64 attr {}", $name))?[[0, 0]]
+    };
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GranuleMeta {
+    pub instrument: String,
+    pub collection: String,
+    pub begin_date: String,
+    pub begin_time: String,
+    pub begin_time_iet: u64,
+    pub end_date: String,
+    pub end_time: String,
+    pub end_time_iet: u64,
+    pub creation_date: String,
+    pub creation_time: String,
+    pub orbit_number: u64,
+    pub id: String,
+    pub status: String,
+    pub version: String,
+    pub idps_mode: String,
+    pub jpss_doc: String,
+    pub leoa_flag: String,
+    pub packet_type: Vec<String>,
+    pub packet_type_count: Vec<u32>,
+    pub percent_missing: f32,
+    pub reference_id: String,
+    pub software_version: String,
+}
+
+impl GranuleMeta {
+    fn from_dataset(instrument: &str, collection: &str, ds: &Dataset) -> Result<Self> {
+        let packet_type: Vec<String> = ds
+            .attr("N_Packet_Type")
+            .context("lookup attr N_Packet_Type")?
+            .read_2d::<FixedAscii<MAX_STR_LEN>>()
+            .context("read attr N_Packet_Type")?
+            .as_slice()
+            .context("converting N_Packet_Type to slice")?
+            .iter()
+            .map(|fa| fa.to_string())
+            .collect();
+        let packet_type_count: Vec<u32> = ds
+            .attr("N_Packet_Type_Count")
+            .context("lookup attr N_Packet_Type_Count")?
+            .read_2d::<u64>()
+            .context("read attr N_Packet_Type_Count")?
+            .as_slice()
+            .context("converting N_Packet_Type_Count to slice")?
+            .iter()
+            .map(|v| u32::try_from(*v).unwrap())
+            .collect();
+        Ok(Self {
+            instrument: instrument.to_string(),
+            collection: collection.to_string(),
+            begin_date: attr_string!(&ds, "Beginning_Date"),
+            begin_time: attr_string!(&ds, "Beginning_Time"),
+            begin_time_iet: attr_u64!(&ds, "N_Beginning_Time_IET"),
+            end_date: attr_string!(&ds, "Ending_Date"),
+            end_time: attr_string!(&ds, "Ending_Time"),
+            end_time_iet: attr_u64!(&ds, "N_Ending_Time_IET"),
+            creation_date: attr_string!(&ds, "N_Creation_Date"),
+            creation_time: attr_string!(&ds, "N_Creation_Time"),
+            orbit_number: attr_u64!(&ds, "N_Beginning_Orbit_Number"),
+            id: attr_string!(&ds, "N_Granule_ID"),
+            status: attr_string!(&ds, "N_Granule_Status"),
+            version: attr_string!(&ds, "N_Granule_Version"),
+            idps_mode: attr_string!(&ds, "N_IDPS_Mode"),
+            jpss_doc: attr_string!(&ds, "N_JPSS_Document_Ref"),
+            leoa_flag: attr_string!(&ds, "N_LEOA_Flag"),
+            packet_type,
+            packet_type_count,
+            percent_missing: 0.0,
+            reference_id: attr_string!(&ds, "N_Reference_ID"),
+            software_version: attr_string!(&ds, "N_Software_Version"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProductMeta {
+    pub instrument: String,
+    pub collection: String,
+    pub processing_domain: String,
+}
+
+impl ProductMeta {
+    fn from_group(grp: &Group) -> Result<Self> {
+        Ok(Self {
+            instrument: attr_string!(&grp, "Instrument_Short_Name"),
+            collection: attr_string!(&grp, "N_Collection_Short_Name"),
+            processing_domain: attr_string!(&grp, "N_Processing_Domain"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Meta {
+    pub distributor: String,
+    pub mission: String,
+    pub dataset_source: String,
+    pub created: u64,
+    pub platform: String,
+    pub products: HashMap<String, ProductMeta>,
+    pub granules: HashMap<String, GranuleMeta>,
+}
+
+impl Meta {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file = hdf5::File::open(path)?;
+        let mut meta = Meta {
+            distributor: attr_string!(&file, "Distributor"),
+            mission: attr_string!(&file, "Mission_Name"),
+            dataset_source: attr_string!(&file, "N_Dataset_Source"),
+            platform: attr_string!(&file, "Platform_Short_Name"),
+            created: 0,
+            products: HashMap::default(),
+            granules: HashMap::default(),
+        };
+
+        let data_products = file
+            .group("Data_Products")
+            .context("opening Data_Products")?;
+        for product_group in data_products
+            .groups()
+            .context("getting Data_Product subgroups")?
+        {
+            let product_meta = ProductMeta::from_group(&product_group)
+                .with_context(|| format!("reading group {}", product_group.name()))?;
+            let product_name = &product_meta.collection.clone();
+
+            // all datasets in product group, skipping _Aggr b/c we'll create our own aggr
+            let gran_datasets = product_group
+                .datasets()
+                .context("gettting Data_Products datasets")?
+                .into_iter()
+                .filter(|d| !d.name().ends_with("_Aggr"));
+            for gran_dataset in gran_datasets {
+                let gran_meta = GranuleMeta::from_dataset(
+                    &product_meta.instrument,
+                    &product_meta.collection,
+                    &gran_dataset,
+                )
+                .with_context(|| format!("reading dataset {}", gran_dataset.name()))?;
+                meta.granules.insert(product_name.clone(), gran_meta);
+            }
+
+            meta.products.insert(product_name.clone(), product_meta);
+        }
+
+        Ok(meta)
+    }
+}
+
+/// Wraps an ``Rdr`` for the purposes of writing.
 #[derive(Clone)]
 pub struct RdrWriter {
     pub inner: Rdr,
+    apids: HashMap<Apid, ApidSpec>,
 }
 
 impl RdrWriter {
@@ -98,10 +282,12 @@ impl RdrWriter {
         packed_with: Vec<String>,
     ) -> Self {
         let mut rdr = Rdr {
-            product: product.clone(),
+            product_id: product.product_id.to_string(),
             packed_with,
-            granule_time: gran_iet,
-            granule_utc: gran_utc,
+            begin_time_iet: gran_iet,
+            end_time_iet: gran_iet + product.gran_len,
+            begin_time_utc: gran_utc,
+            end_time_utc: gran_utc + product.gran_len,
             header: StaticHeader::new(gran_iet, sat, product),
             apids: HashMap::default(),
             trackers: HashMap::default(),
@@ -123,7 +309,10 @@ impl RdrWriter {
             rdr.trackers.insert(apid.num, Vec::default());
         }
 
-        Self { inner: rdr }
+        Self {
+            apids: product.apids.iter().map(|a| (a.num, a.clone())).collect(),
+            inner: rdr,
+        }
     }
 
     fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
@@ -141,13 +330,14 @@ impl RdrWriter {
         });
     }
 
-    fn update_apid_list(&mut self, product: &ProductSpec, pkt: &Packet) {
-        let apid = product
-            .get_apid(pkt.header.apid)
+    fn update_apid_list(&mut self, pkt: &Packet) {
+        let apid = self
+            .apids
+            .get(&pkt.header.apid)
             .with_context(|| {
                 format!(
                     "apid {} not in product {}",
-                    pkt.header.apid, product.type_id
+                    pkt.header.apid, self.inner.product_id
                 )
             })
             .expect("apid to be present because we already checked for it");
@@ -156,7 +346,7 @@ impl RdrWriter {
             .apids
             .entry(pkt.header.apid)
             .or_insert_with(|| ApidInfo {
-                name: apid.name,
+                name: apid.name.clone(),
                 value: u32::from(apid.num),
                 pkt_tracker_start_idx: 0,
                 pkts_reserved: 0,
@@ -170,9 +360,9 @@ impl RdrWriter {
     ///
     /// # Panics
     /// If the packet traker offset overflows
-    pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet, product: &ProductSpec) {
+    pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet) {
         self.add_tracker(gran_iet, &pkt);
-        self.update_apid_list(product, &pkt);
+        self.update_apid_list(&pkt);
         self.inner.storage.push_back(pkt);
 
         // Update static header dynamic offsets
@@ -197,7 +387,7 @@ impl RdrWriter {
         // Static header should be good-to-go because it's updated on every call to add_packet
         dat.extend_from_slice(&self.inner.header.as_bytes());
 
-        let apids: Vec<u16> = self.inner.product.apids.iter().map(|p| p.num).collect();
+        let apids: Vec<u16> = self.apids.keys().copied().collect();
         // let mut apids: Vec<u16> = self.apids.keys().copied().collect();
         // apids.sort_unstable();
 
@@ -323,7 +513,6 @@ impl ApidInfo {
         buf
     }
 
-    #[must_use]
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < ApidInfo::LEN {
             bail!("not enough bytes");
@@ -397,5 +586,45 @@ fn copy_with_len<'a>(dst: &'a mut [u8], src: &'a [u8], len: usize) {
         }
     } else {
         dst[..len].copy_from_slice(&src[..len]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn fixture_file(name: &str) -> PathBuf {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name);
+        assert!(path.exists(), "fixture path '{path:?}' does not exist");
+        path
+    }
+
+    mod meta {
+        use super::*;
+
+        #[test]
+        fn test_meta_from_file() {
+            let path = fixture_file("RCRIS-RNSCA_j02_d20240627_t1930197_e1943077_b00001_c20240627194303766000_drlu_ops.h5");
+
+            let meta = Meta::from_file(path).expect("failed creating meta for known good file");
+
+            assert_eq!(
+                meta.mission, "S-NPP/JPSS",
+                "mission does not match, maybe an issue getting string attributes"
+            );
+            assert_eq!(
+                meta.products.len(),
+                2,
+                "expected 2 products, got {}",
+                meta.products.len()
+            );
+
+            dbg!(meta);
+        }
     }
 }

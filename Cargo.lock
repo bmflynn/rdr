@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "rdr"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "ccsds",
@@ -748,6 +748,7 @@ dependencies = [
  "lazy_static",
  "leap-seconds",
  "ndarray",
+ "regex",
  "serde",
  "serde_yaml",
  "tempfile",

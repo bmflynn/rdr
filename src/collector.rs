@@ -86,9 +86,9 @@ impl Collector {
             let packed_product = self.products.get(packed_id).expect("spec for existing id");
             for (key, packed_rdr) in &self.packed {
                 let packed_gran_start = i64::try_from(key.1).unwrap();
-                let primary_gran_start = i64::try_from(rdr.inner.granule_time).unwrap();
+                let primary_gran_start = i64::try_from(rdr.inner.begin_time_iet).unwrap();
                 let primary_gran_end =
-                    i64::try_from(rdr.inner.granule_time + product.gran_len).unwrap();
+                    i64::try_from(rdr.inner.begin_time_iet + product.gran_len).unwrap();
                 let packed_gran_len = i64::try_from(packed_product.gran_len).unwrap();
 
                 if packed_gran_start > primary_gran_start - packed_gran_len
@@ -123,7 +123,7 @@ impl Collector {
                     );
                     RdrWriter::new(gran_utc, gran_iet, &self.sat, product, packed_ids.clone())
                 });
-                rdr.add_packet(gran_iet, pkt, product);
+                rdr.add_packet(gran_iet, pkt);
             }
 
             // Check to see if the second to last granule is complete. We can't check the
@@ -147,7 +147,7 @@ impl Collector {
                 );
                 RdrWriter::new(gran_utc, gran_iet, &self.sat, product, vec![])
             });
-            rdr.add_packet(gran_iet, pkt, product);
+            rdr.add_packet(gran_iet, pkt);
             None
         }
     }

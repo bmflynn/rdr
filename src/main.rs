@@ -1,6 +1,8 @@
 mod collector;
 mod command_create;
 mod command_dump;
+mod command_aggr;
+mod command_deaggr;
 mod config;
 mod rdr;
 mod time;
@@ -23,6 +25,10 @@ use crate::config::get_default_content;
 #[derive(Parser)]
 #[command(version, about, long_about, disable_help_subcommand = true)]
 struct Cli {
+    /// Logging level filters, e.g., debug, info, warn, etc ...
+    #[arg(short, long, default_value = "info")]
+    logging: String,
+
     #[command(subcommand)]
     commands: Commands,
 }
@@ -70,40 +76,52 @@ enum Commands {
         #[arg(short, long)]
         leap_seconds: Option<PathBuf>,
 
-        /// One or more packet data file. The packet data must be sorted in time and sequence id order.
-        #[arg(short, long, value_name = "path")]
-        input: Vec<PathBuf>,
-
         /// Output directory.
         #[arg(short, long, value_name = "path", default_value = "output")]
         output: PathBuf,
+
+        /// One or more packet data file. The packet data must be sorted in time and sequence id order.
+        #[arg(value_name = "path")]
+        input: Vec<PathBuf>,
     },
     /// Extract the spacepacket data contained in the RDR.
     Dump {
-        /// One or more RDR file
-        #[arg(short, long, value_name = "path")]
+        /// RDR file to dump
+        #[arg(value_name = "path")]
+        input: PathBuf,
+    },
+    /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
+    #[command(hide=true)]
+    Agg {
+        /// One or more RDR file to include in the output
+        #[arg(value_name = "path")]
+        input: Vec<PathBuf>,
+    },
+    /// Deaggregate an aggregated RDR.
+    #[command(hide=true)]
+    Deagg {
+        /// RDR file to deaggregate into native resolution RDRs.
+        #[arg(value_name = "path")]
         input: PathBuf,
     },
     /// Output the default configuration.
     Config {
         /// Satellite to show the config for
-        #[arg(value_name = "SAT", value_parser=parse_valid_satellite)]
+        #[arg(value_name = "sat", value_parser=parse_valid_satellite)]
         satellite: String,
     },
 }
 
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_target(false)
         .with_writer(stderr)
         .with_ansi(false)
         .without_time()
-        .with_env_filter(
-            EnvFilter::try_from_env("RDR_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::new(cli.logging))
         .init();
-
-    let cli = Cli::parse();
 
     match cli.commands {
         Commands::Create {
@@ -125,6 +143,12 @@ fn main() -> Result<()> {
         }
         Commands::Config { satellite } => {
             stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;
+        }
+        Commands::Agg { input } => {
+            unimplemented!()
+        }
+        Commands::Deagg { input } => {
+            unimplemented!()
         }
     }
 

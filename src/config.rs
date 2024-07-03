@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use regex::Regex;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -47,7 +48,7 @@ impl ProductSpec {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RdrSpec {
     pub product: String,
     #[serde(default)]

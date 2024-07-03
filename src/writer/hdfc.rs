@@ -13,7 +13,7 @@ use hdf5_sys::{
 };
 use std::ffi::{c_char, CString};
 
-use crate::rdr::Rdr;
+use crate::config::ProductSpec;
 
 macro_rules! cstr {
     ($s:expr) => {
@@ -52,7 +52,12 @@ pub(crate) struct DataProductsRefWriter {
 }
 
 impl DataProductsRefWriter {
-    pub fn write_ref(&mut self, file: &File, rdr: &Rdr, src_path: &str) -> Result<String> {
+    pub fn write_ref(
+        &mut self,
+        file: &File,
+        product: &ProductSpec,
+        src_path: &str,
+    ) -> Result<String> {
         let (src_group_path, _) = src_path
             .rsplit_once('/')
             .expect("dataset path to have 3 parts");
@@ -104,7 +109,7 @@ impl DataProductsRefWriter {
             format!("creating reference to source dataset {src_dataset_name}")
         );
 
-        let dst_group_path = format!("/Data_Products/{0}", rdr.product.short_name,);
+        let dst_group_path = format!("/Data_Products/{0}", product.short_name,);
         self.dst_group_id =
             unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
         chkid!(
@@ -127,7 +132,7 @@ impl DataProductsRefWriter {
             .rsplit('_')
             .next()
             .expect("dataset name to end with _{idx}");
-        let dst_dataset_name = format!("{}_Gran_{sidx}", rdr.product.short_name,);
+        let dst_dataset_name = format!("{}_Gran_{sidx}", product.short_name,);
         self.dst_dataset_id = unsafe {
             H5Dcreate2(
                 self.dst_group_id,
