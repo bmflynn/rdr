@@ -3,10 +3,10 @@ mode: dbc
 distributor: local
 
 satellite:
-  id: j01
-  short_name: JPSS-1
+  id: npp
+  short_name: NPP
   base_time: 1698019234000000
-  mission: JPSS-1/JPSS
+  mission: Suomi NPP/JPSS
 
 rdrs:
   - product: RVIRS
