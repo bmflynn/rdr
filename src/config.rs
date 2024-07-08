@@ -1,5 +1,4 @@
 use anyhow::{bail, Result};
-use regex::Regex;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,

@@ -5,6 +5,7 @@ use crate::{
     writer,
 };
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use crossbeam::channel;
 use std::{
     fs::{create_dir, File},
@@ -44,22 +45,23 @@ where
             for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(packet_groups, decode_iet) {
                 let complete = collector.add(pkt_utc, pkt_iet, pkt);
                 if let Some(rdrs) = complete {
-                    debug!("collected {}", &rdrs[0].inner);
+                    debug!("collected {}", &rdrs[0]);
                     let _ = tx.send(rdrs);
                 }
             }
             for rdrs in collector.finish() {
-                debug!("collected {}", &rdrs[0].inner);
+                debug!("collected {}", &rdrs[0]);
                 let _ = tx.send(rdrs);
             }
         });
 
         s.spawn(move || {
+            let created = Utc::now();
             for rdrs in rx {
-                match writer::write_hdf5(config, &rdrs, dest).context("writing h5") {
-                    Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0].inner),
+                match writer::write_hdf5(config, &rdrs, created, dest).context("writing h5") {
+                    Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0]),
                     Err(err) => {
-                        error!("failed writing {}: {err}", &rdrs[0].inner);
+                        error!("failed writing {}: {err}", &rdrs[0]);
                     }
                 };
             }

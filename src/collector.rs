@@ -5,7 +5,7 @@ use tracing::trace;
 
 use crate::{
     config::{ProductSpec, RdrSpec, SatSpec},
-    rdr::RdrWriter,
+    rdr::Rdr,
     time::TimeFcn,
 };
 
@@ -24,8 +24,8 @@ pub struct Collector {
     // Maps apids to product_id
     ids: HashMap<Apid, String>,
 
-    primary: HashMap<(String, u64), RdrWriter>,
-    packed: HashMap<(String, u64), RdrWriter>,
+    primary: HashMap<(String, u64), Rdr>,
+    packed: HashMap<(String, u64), Rdr>,
 }
 
 impl Collector {
@@ -76,19 +76,15 @@ impl Collector {
     ///
     /// This is all granules where the packet granule start is within its granule length of
     /// the start of the primary granule start and less than the primary granule end.
-    fn overlapping_packed_granules(
-        &self,
-        product: &ProductSpec,
-        rdr: &RdrWriter,
-    ) -> Vec<RdrWriter> {
+    fn overlapping_packed_granules(&self, product: &ProductSpec, rdr: &Rdr) -> Vec<Rdr> {
         let mut packed = Vec::default();
-        for packed_id in &rdr.inner.packed_with {
+        for packed_id in &rdr.packed_with {
             let packed_product = self.products.get(packed_id).expect("spec for existing id");
             for (key, packed_rdr) in &self.packed {
                 let packed_gran_start = i64::try_from(key.1).unwrap();
-                let primary_gran_start = i64::try_from(rdr.inner.begin_time_iet).unwrap();
+                let primary_gran_start = i64::try_from(rdr.begin_time_iet).unwrap();
                 let primary_gran_end =
-                    i64::try_from(rdr.inner.begin_time_iet + product.gran_len).unwrap();
+                    i64::try_from(rdr.begin_time_iet + product.gran_len).unwrap();
                 let packed_gran_len = i64::try_from(packed_product.gran_len).unwrap();
 
                 if packed_gran_start > primary_gran_start - packed_gran_len
@@ -101,7 +97,7 @@ impl Collector {
         packed
     }
 
-    pub fn add(&mut self, pkt_utc: u64, pkt_iet: u64, pkt: Packet) -> Option<Vec<RdrWriter>> {
+    pub fn add(&mut self, pkt_utc: u64, pkt_iet: u64, pkt: Packet) -> Option<Vec<Rdr>> {
         if !self.ids.contains_key(&pkt.header.apid) {
             return None; // apid has no configured product
         }
@@ -121,7 +117,7 @@ impl Collector {
                         product.product_id,
                         gran_iet
                     );
-                    RdrWriter::new(gran_utc, gran_iet, &self.sat, product, packed_ids.clone())
+                    Rdr::new(product, &self.sat, gran_iet, gran_utc)
                 });
                 rdr.add_packet(gran_iet, pkt);
             }
@@ -145,14 +141,14 @@ impl Collector {
                     product.product_id,
                     gran_iet
                 );
-                RdrWriter::new(gran_utc, gran_iet, &self.sat, product, vec![])
+                Rdr::new(product, &self.sat, gran_utc, gran_iet)
             });
             rdr.add_packet(gran_iet, pkt);
             None
         }
     }
 
-    pub fn finish(mut self) -> Vec<Vec<RdrWriter>> {
+    pub fn finish(mut self) -> Vec<Vec<Rdr>> {
         let mut keys: Vec<(String, u64)> = self.primary.keys().map(|k| (*k).clone()).collect();
         keys.sort_by(|a, b| a.1.cmp(&b.1));
 

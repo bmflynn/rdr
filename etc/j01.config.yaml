@@ -1,4 +1,4 @@
-origin: local
+origin: loc
 mode: dbc
 distributor: local
 
@@ -16,6 +16,7 @@ rdrs:
 
 products:
   - product_id: RVIRS
+    primary: true
     short_name: VIIRS-SCIENCE-RDR
     type_id: SCIENCE
     sensor: VIIRS
@@ -51,6 +52,7 @@ products:
       - { "num": 828, "name": "DNB_HGB", "max_expected": 816 }
 
   - product_id: RCRIS
+    primary: true
     short_name: CRIS-SCIENCE-RDR
     type_id: SCIENCE
     sensor: CrIS
@@ -141,6 +143,7 @@ products:
       - { "num": 1395, "name": "CSW9", "max_expected": 9 }
 
   - product_id: RNSCA
+    primary: false
     short_name: SPACECRAFT-DIARY-RDR
     type_id: DIARY
     sensor: null

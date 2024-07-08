@@ -1,11 +1,7 @@
 use anyhow::{bail, Context, Result};
 use ccsds::{Apid, Packet};
 use chrono::{DateTime, Utc};
-use hdf5::{
-    types::{FixedAscii, VarLenAscii},
-    Dataset, Group,
-};
-use ndarray::Dim;
+use hdf5::{types::FixedAscii, Dataset, Group};
 use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -45,7 +41,7 @@ macro_rules! to_str {
     };
 }
 
-use crate::config::{ApidSpec, ProductSpec, SatSpec};
+use crate::config::{Config, ProductSpec, SatSpec};
 
 /// Common RDR data structures and metadata.
 #[derive(Clone)]
@@ -75,6 +71,127 @@ pub struct Rdr {
 }
 
 impl Rdr {
+    pub fn new(product: &ProductSpec, sat: &SatSpec, gran_iet: u64, gran_utc: u64) -> Self {
+        let mut rdr = Rdr {
+            product_id: product.product_id.to_string(),
+            packed_with: vec!["RNSCA".to_string()],
+            begin_time_iet: gran_iet,
+            end_time_iet: gran_iet + product.gran_len,
+            begin_time_utc: gran_utc,
+            end_time_utc: gran_utc + product.gran_len,
+            header: StaticHeader::new(gran_iet, sat, product),
+            apids: HashMap::default(),
+            trackers: HashMap::default(),
+            storage: VecDeque::default(),
+            created: Utc::now(),
+        };
+
+        for apid in &product.apids {
+            rdr.apids.insert(
+                apid.num,
+                ApidInfo {
+                    name: apid.name.clone(),
+                    value: u32::from(apid.num),
+                    pkt_tracker_start_idx: 0,
+                    pkts_reserved: 0,
+                    pkts_received: 0,
+                },
+            );
+            rdr.trackers.insert(apid.num, Vec::default());
+        }
+
+        rdr
+    }
+
+    fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
+        let trackers = self.trackers.entry(pkt.header.apid).or_default();
+        let offset = match trackers.last() {
+            Some(t) => t.offset + t.size,
+            None => 0,
+        };
+        trackers.push(PacketTracker {
+            obs_time: i64::try_from(gran_iet).expect("granule time to fit in i64"),
+            sequence_number: i32::from(pkt.header.sequence_id),
+            size: i32::try_from(pkt.data.len()).expect("pkt len to fit in i32"),
+            offset,
+            fill_percent: 0,
+        });
+    }
+
+    fn update_apid_list(&mut self, pkt: &Packet) {
+        let apid_list = self
+            .apids
+            .get_mut(&pkt.header.apid)
+            .with_context(|| {
+                format!(
+                    "apid {} not in product {}",
+                    pkt.header.apid, self.product_id
+                )
+            })
+            .expect("apid to be present because we already checked for it");
+        apid_list.pkts_reserved += 1;
+        apid_list.pkts_received += 1;
+    }
+
+    /// Add a packet and update the Common RDR structures and offsets.
+    ///
+    /// # Panics
+    /// If the packet traker offset overflows
+    pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet) {
+        self.add_tracker(gran_iet, &pkt);
+        self.update_apid_list(&pkt);
+        self.storage.push_back(pkt);
+
+        // Update static header dynamic offsets
+        self.header.pkt_tracker_offset =
+            u32::try_from(StaticHeader::LEN + ApidInfo::LEN * self.apids.len()).unwrap();
+        let num_trackers: usize = self.trackers.values().map(Vec::len).sum();
+        self.header.ap_storage_offset = u32::try_from(
+            self.header.pkt_tracker_offset as usize + PacketTracker::LEN * num_trackers,
+        )
+        .unwrap();
+        let num_packet_bytes: usize = self.storage.iter().map(|p| p.data.len()).sum();
+        self.header.next_pkt_position = u32::try_from(num_packet_bytes).unwrap();
+    }
+
+    /// Compile this RDR into its byte representation.
+    ///
+    /// # Panics
+    /// If structure counts overflow rdr structure types
+    #[must_use]
+    pub fn compile(&self) -> Vec<u8> {
+        let mut dat = Vec::new();
+        // Static header should be good-to-go because it's updated on every call to add_packet
+        dat.extend_from_slice(&self.header.as_bytes());
+
+        let apids: Vec<u16> = self.apids.keys().copied().collect();
+        // let mut apids: Vec<u16> = self.apids.keys().copied().collect();
+        // apids.sort_unstable();
+
+        // Write APID lists in numerical order
+        let mut tracker_start_idx: u32 = 0;
+        for apid in &apids {
+            // update the list with current information regarding packet tracker config
+            let mut list = self.apids.get(apid).unwrap().clone();
+            list.pkt_tracker_start_idx = tracker_start_idx;
+            dat.extend_from_slice(&list.as_bytes());
+            // Assume tracker and lists have the same apids, and since we're handing apids in
+            // order can can just use the num trackers for this apid
+            tracker_start_idx += u32::try_from(self.trackers[apid].len()).unwrap();
+        }
+
+        for apid in apids {
+            for tracker in &self.trackers[&apid] {
+                dat.extend_from_slice(&tracker.as_bytes());
+            }
+        }
+
+        for pkt in &self.storage {
+            dat.extend_from_slice(&pkt.data);
+        }
+
+        dat
+    }
     #[must_use]
     pub fn granule_dt(&self) -> DateTime<Utc> {
         let start_ns = i64::try_from(self.begin_time_utc * 1000).unwrap_or(0);
@@ -115,6 +232,8 @@ macro_rules! attr_u64 {
     };
 }
 
+/// Metadata associated with a particular granule dataset from RDR path
+/// /Data_Products/<collection>/<dataset>_Gran_<x>.
 #[derive(Debug, Clone, Serialize)]
 pub struct GranuleMeta {
     pub instrument: String,
@@ -190,6 +309,8 @@ impl GranuleMeta {
     }
 }
 
+/// Metadata associated with a particular product group from RDR path
+/// /Data_Products/<collection>
 #[derive(Debug, Clone, Serialize)]
 pub struct ProductMeta {
     pub instrument: String,
@@ -207,18 +328,21 @@ impl ProductMeta {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// RDR metadata generally representing the metadata (attributes) available
+/// in a HDF5 file.
+#[derive(Debug, Clone)]
 pub struct Meta {
     pub distributor: String,
     pub mission: String,
     pub dataset_source: String,
-    pub created: u64,
+    pub created: DateTime<Utc>,
     pub platform: String,
     pub products: HashMap<String, ProductMeta>,
-    pub granules: HashMap<String, GranuleMeta>,
+    pub granules: HashMap<String, Vec<GranuleMeta>>,
 }
 
 impl Meta {
+    /// Create from the contents of a hdf5 file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = hdf5::File::open(path)?;
         let mut meta = Meta {
@@ -226,7 +350,7 @@ impl Meta {
             mission: attr_string!(&file, "Mission_Name"),
             dataset_source: attr_string!(&file, "N_Dataset_Source"),
             platform: attr_string!(&file, "Platform_Short_Name"),
-            created: 0,
+            created: Utc::now(),
             products: HashMap::default(),
             granules: HashMap::default(),
         };
@@ -255,7 +379,10 @@ impl Meta {
                     &gran_dataset,
                 )
                 .with_context(|| format!("reading dataset {}", gran_dataset.name()))?;
-                meta.granules.insert(product_name.clone(), gran_meta);
+                meta.granules
+                    .entry(product_name.to_string())
+                    .or_default()
+                    .push(gran_meta);
             }
 
             meta.products.insert(product_name.clone(), product_meta);
@@ -263,157 +390,43 @@ impl Meta {
 
         Ok(meta)
     }
-}
 
-/// Wraps an ``Rdr`` for the purposes of writing.
-#[derive(Clone)]
-pub struct RdrWriter {
-    pub inner: Rdr,
-    apids: HashMap<Apid, ApidSpec>,
-}
-
-impl RdrWriter {
-    #[must_use]
-    pub fn new(
-        gran_utc: u64,
-        gran_iet: u64,
-        sat: &SatSpec,
-        product: &ProductSpec,
-        packed_with: Vec<String>,
-    ) -> Self {
-        let mut rdr = Rdr {
-            product_id: product.product_id.to_string(),
-            packed_with,
-            begin_time_iet: gran_iet,
-            end_time_iet: gran_iet + product.gran_len,
-            begin_time_utc: gran_utc,
-            end_time_utc: gran_utc + product.gran_len,
-            header: StaticHeader::new(gran_iet, sat, product),
-            apids: HashMap::default(),
-            trackers: HashMap::default(),
-            storage: VecDeque::default(),
+    /// Create a Meta configured for all products in `product_ids`.
+    ///
+    /// Returns `None` if either product are not found in `config`.
+    pub fn from_products(product_ids: &[String], config: &Config) -> Option<Self> {
+        let products = config
+            .products
+            .iter()
+            .filter(|p| product_ids.contains(&p.short_name))
+            .collect::<Vec<&ProductSpec>>();
+        if products.is_empty() {
+            return None;
+        }
+        Some(Meta {
+            distributor: config.distributor.clone(),
+            mission: config.satellite.mission.clone(),
+            dataset_source: config.distributor.clone(),
             created: Utc::now(),
-        };
-
-        for apid in &product.apids {
-            rdr.apids.insert(
-                apid.num,
-                ApidInfo {
-                    name: apid.name.clone(),
-                    value: u32::from(apid.num),
-                    pkt_tracker_start_idx: 0,
-                    pkts_reserved: 0,
-                    pkts_received: 0,
-                },
-            );
-            rdr.trackers.insert(apid.num, Vec::default());
-        }
-
-        Self {
-            apids: product.apids.iter().map(|a| (a.num, a.clone())).collect(),
-            inner: rdr,
-        }
-    }
-
-    fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
-        let trackers = self.inner.trackers.entry(pkt.header.apid).or_default();
-        let offset = match trackers.last() {
-            Some(t) => t.offset + t.size,
-            None => 0,
-        };
-        trackers.push(PacketTracker {
-            obs_time: i64::try_from(gran_iet).expect("granule time to fit in i64"),
-            sequence_number: i32::from(pkt.header.sequence_id),
-            size: i32::try_from(pkt.data.len()).expect("pkt len to fit in i32"),
-            offset,
-            fill_percent: 0,
-        });
-    }
-
-    fn update_apid_list(&mut self, pkt: &Packet) {
-        let apid = self
-            .apids
-            .get(&pkt.header.apid)
-            .with_context(|| {
-                format!(
-                    "apid {} not in product {}",
-                    pkt.header.apid, self.inner.product_id
-                )
-            })
-            .expect("apid to be present because we already checked for it");
-        let apid_list = self
-            .inner
-            .apids
-            .entry(pkt.header.apid)
-            .or_insert_with(|| ApidInfo {
-                name: apid.name.clone(),
-                value: u32::from(apid.num),
-                pkt_tracker_start_idx: 0,
-                pkts_reserved: 0,
-                pkts_received: 0,
-            });
-        apid_list.pkts_reserved += 1;
-        apid_list.pkts_received += 1;
-    }
-
-    /// Add a packet and update the Common RDR structures and offsets.
-    ///
-    /// # Panics
-    /// If the packet traker offset overflows
-    pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet) {
-        self.add_tracker(gran_iet, &pkt);
-        self.update_apid_list(&pkt);
-        self.inner.storage.push_back(pkt);
-
-        // Update static header dynamic offsets
-        self.inner.header.pkt_tracker_offset =
-            u32::try_from(StaticHeader::LEN + ApidInfo::LEN * self.inner.apids.len()).unwrap();
-        let num_trackers: usize = self.inner.trackers.values().map(Vec::len).sum();
-        self.inner.header.ap_storage_offset = u32::try_from(
-            self.inner.header.pkt_tracker_offset as usize + PacketTracker::LEN * num_trackers,
-        )
-        .unwrap();
-        let num_packet_bytes: usize = self.inner.storage.iter().map(|p| p.data.len()).sum();
-        self.inner.header.next_pkt_position = u32::try_from(num_packet_bytes).unwrap();
-    }
-
-    /// Compile this RDR into its byte representation.
-    ///
-    /// # Panics
-    /// If structure counts overflow rdr structure types
-    #[must_use]
-    pub fn compile(&self) -> Vec<u8> {
-        let mut dat = Vec::new();
-        // Static header should be good-to-go because it's updated on every call to add_packet
-        dat.extend_from_slice(&self.inner.header.as_bytes());
-
-        let apids: Vec<u16> = self.apids.keys().copied().collect();
-        // let mut apids: Vec<u16> = self.apids.keys().copied().collect();
-        // apids.sort_unstable();
-
-        // Write APID lists in numerical order
-        let mut tracker_start_idx: u32 = 0;
-        for apid in &apids {
-            // update the list with current information regarding packet tracker config
-            let mut list = self.inner.apids.get(apid).unwrap().clone();
-            list.pkt_tracker_start_idx = tracker_start_idx;
-            dat.extend_from_slice(&list.as_bytes());
-            // Assume tracker and lists have the same apids, and since we're handing apids in
-            // order can can just use the num trackers for this apid
-            tracker_start_idx += u32::try_from(self.inner.trackers[apid].len()).unwrap();
-        }
-
-        for apid in apids {
-            for tracker in &self.inner.trackers[&apid] {
-                dat.extend_from_slice(&tracker.as_bytes());
-            }
-        }
-
-        for pkt in &self.inner.storage {
-            dat.extend_from_slice(&pkt.data);
-        }
-
-        dat
+            platform: config.satellite.short_name.clone(),
+            products: products
+                .iter()
+                .map(|p| {
+                    (
+                        p.short_name.clone(),
+                        ProductMeta {
+                            instrument: p.sensor.clone(),
+                            collection: p.short_name.clone(),
+                            processing_domain: "ops".to_string(),
+                        },
+                    )
+                })
+                .collect(),
+            granules: products
+                .iter()
+                .map(|p| (p.short_name.clone(), Vec::default()))
+                .collect(),
+        })
     }
 }
 
@@ -623,6 +636,9 @@ mod tests {
                 "expected 2 products, got {}",
                 meta.products.len()
             );
+            assert_eq!(meta.granules["CRIS-SCIENCE-RDR"].len(), 24);
+            let gran = &meta.granules["CRIS-SCIENCE-RDR"][0];
+            assert_eq!(gran.packet_type.len(), 82);
 
             dbg!(meta);
         }
