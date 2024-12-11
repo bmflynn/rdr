@@ -1,4 +1,3 @@
-use anyhow::{bail, Context, Result};
 use ccsds::spacepacket::{Apid, Packet};
 use hdf5::{types::FixedAscii, Dataset, Group};
 use hifitime::Epoch;
@@ -8,6 +7,8 @@ use std::{
     fmt::Display,
     path::Path,
 };
+
+use crate::error::*;
 
 macro_rules! from_bytes4 {
     ($type:ty, $dat:ident, $start:expr) => {
@@ -119,16 +120,12 @@ impl Rdr {
     }
 
     fn update_apid_list(&mut self, pkt: &Packet) {
-        let apid_list = self
-            .apids
-            .get_mut(&pkt.header.apid)
-            .with_context(|| {
-                format!(
-                    "apid {} not in product {}",
-                    pkt.header.apid, self.product_id
-                )
-            })
-            .expect("apid to be present because we already checked for it");
+        let apid_list = self.apids.get_mut(&pkt.header.apid).unwrap_or_else(|| {
+            panic!(
+                "apid {} to be present in product {} because we already checked for it",
+                pkt.header.apid, self.product_id
+            )
+        });
         apid_list.pkts_reserved += 1;
         apid_list.pkts_received += 1;
     }
@@ -214,20 +211,15 @@ impl Display for Rdr {
 
 macro_rules! attr_string {
     ($obj:expr, $name:expr) => {
-        $obj.attr($name)
-            .with_context(|| format!("lookup attr {}", $name))?
-            .read_2d::<FixedAscii<MAX_STR_LEN>>()
-            .with_context(|| format!("reading {} string attribute", $name))?[[0, 0]]
-        .to_string()
+        $obj.attr($name)?
+            .read_2d::<FixedAscii<MAX_STR_LEN>>()?
+            .to_string()
     };
 }
 
 macro_rules! attr_u64 {
     ($obj:expr, $name:expr) => {
-        $obj.attr($name)
-            .with_context(|| format!("lookup attr {}", $name))?
-            .read_2d::<u64>()
-            .with_context(|| format!("read u64 attr {}", $name))?[[0, 0]]
+        $obj.attr($name)?.read_2d::<u64>()?[[0, 0]]
     };
 }
 
@@ -262,24 +254,18 @@ pub struct GranuleMeta {
 impl GranuleMeta {
     fn from_dataset(instrument: &str, collection: &str, ds: &Dataset) -> Result<Self> {
         let packet_type: Vec<String> = ds
-            .attr("N_Packet_Type")
-            .context("lookup attr N_Packet_Type")?
-            .read_2d::<FixedAscii<MAX_STR_LEN>>()
-            .context("read attr N_Packet_Type")?
+            .attr("N_Packet_Type")?
+            .read_2d::<FixedAscii<MAX_STR_LEN>>()?
             .as_slice()
-            .context("converting N_Packet_Type to slice")?
             .iter()
-            .map(|fa| fa.to_string())
+            .map(|fa| fa[0].to_string())
             .collect();
         let packet_type_count: Vec<u32> = ds
-            .attr("N_Packet_Type_Count")
-            .context("lookup attr N_Packet_Type_Count")?
-            .read_2d::<u64>()
-            .context("read attr N_Packet_Type_Count")?
+            .attr("N_Packet_Type_Count")?
+            .read_2d::<u64>()?
             .as_slice()
-            .context("converting N_Packet_Type_Count to slice")?
             .iter()
-            .map(|v| u32::try_from(*v).unwrap())
+            .map(|v| u32::try_from(v[0]).unwrap())
             .collect();
         Ok(Self {
             instrument: instrument.to_string(),
@@ -354,21 +340,14 @@ impl Meta {
             granules: HashMap::default(),
         };
 
-        let data_products = file
-            .group("Data_Products")
-            .context("opening Data_Products")?;
-        for product_group in data_products
-            .groups()
-            .context("getting Data_Product subgroups")?
-        {
-            let product_meta = ProductMeta::from_group(&product_group)
-                .with_context(|| format!("reading group {}", product_group.name()))?;
+        let data_products = file.group("Data_Products")?;
+        for product_group in data_products.groups()? {
+            let product_meta = ProductMeta::from_group(&product_group)?;
             let product_name = &product_meta.collection.clone();
 
             // all datasets in product group, skipping _Aggr b/c we'll create our own aggr
             let gran_datasets = product_group
-                .datasets()
-                .context("gettting Data_Products datasets")?
+                .datasets()?
                 .into_iter()
                 .filter(|d| !d.name().ends_with("_Aggr"));
             for gran_dataset in gran_datasets {
@@ -376,8 +355,7 @@ impl Meta {
                     &product_meta.instrument,
                     &product_meta.collection,
                     &gran_dataset,
-                )
-                .with_context(|| format!("reading dataset {}", gran_dataset.name()))?;
+                )?;
                 meta.granules
                     .entry(product_name.to_string())
                     .or_default()
@@ -464,7 +442,7 @@ impl StaticHeader {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < StaticHeader::LEN {
-            bail!("not enough bytes");
+            return Err(Error::NotEnoughBytes("StaticHeader"));
         }
         let rdr = Self {
             satellite: to_str!(&data[0..4]),
@@ -527,7 +505,7 @@ impl ApidInfo {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < ApidInfo::LEN {
-            bail!("not enough bytes");
+            return Err(Error::NotEnoughBytes("ApidInfo"));
         }
         let info = Self {
             name: to_str!(&data[0..16]),
@@ -574,7 +552,7 @@ impl PacketTracker {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < PacketTracker::LEN {
-            bail!("not enough bytes");
+            return Err(Error::NotEnoughBytes("PacketTracker"));
         }
         let tracker = Self {
             obs_time: from_bytes8!(i64, data, 0),

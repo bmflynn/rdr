@@ -1,5 +1,3 @@
-use anyhow::{bail, Context, Result};
-
 use hdf5::File;
 use hdf5_sys::{
     h5::hsize_t,
@@ -14,20 +12,24 @@ use hdf5_sys::{
 use std::ffi::{c_char, CString};
 
 use crate::config::ProductSpec;
+use crate::error::{Error, Result};
 
 macro_rules! cstr {
     ($s:expr) => {
-        CString::new($s)
-            .with_context(|| format!("creating c_str from {}", $s))?
-            .as_ptr()
-            .cast::<c_char>()
+        match CString::new($s) {
+            Ok(s) => s,
+            Err(n) => CString::new($s[..n.nul_position()].to_string())
+                .expect("nul byte was removed this should not fail"),
+        }
+        .as_ptr()
+        .cast::<c_char>()
     };
 }
 
 macro_rules! chkid {
     ($id:expr, $name:expr, $msg:expr) => {
         if $id == H5I_INVALID_HID {
-            bail!("invalid h5 id: name={}: {}", $name, $msg);
+            return Err(Error::Hdf5C(format!("invalid hdf5 id: {}", $id)));
         }
     };
 }
@@ -35,7 +37,10 @@ macro_rules! chkid {
 macro_rules! chkerr {
     ($id:expr, $name:expr, $msg:expr) => {
         if $id < 0 {
-            bail!("h5 error name={}: {}", $name, $msg);
+            return Err(Error::Hdf5C(format!(
+                "err={} object={}: {}",
+                $id, $name, $msg
+            )));
         }
     };
 }

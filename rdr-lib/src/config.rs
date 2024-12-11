@@ -1,12 +1,9 @@
-use anyhow::{bail, Result};
-use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    path::PathBuf,
-};
+use std::{collections::HashSet, fs::File, path::PathBuf};
 
 use ccsds::spacepacket::Apid;
 use serde::Deserialize;
+
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SatSpec {
@@ -75,11 +72,10 @@ impl Config {
         for rdr in &self.rdrs {
             for packed_id in &rdr.packed_with {
                 if !product_ids.contains(packed_id) {
-                    bail!(
+                    return Err(Error::ConfigInvalid(format!(
                         "product {} has invalid packed product {}",
-                        rdr.product,
-                        packed_id
-                    );
+                        rdr.product, packed_id
+                    )));
                 }
             }
         }
@@ -100,35 +96,24 @@ impl Config {
     }
 }
 
-use lazy_static::lazy_static;
-lazy_static! {
-    static ref DEFAULT_CONFIG: HashMap<&'static str, &'static str> = HashMap::from([
-        (
-            "npp",
-            include_str!(concat!(env!("OUT_DIR"), "/npp.config.yaml")),
-        ),
-        (
-            "j01",
-            include_str!(concat!(env!("OUT_DIR"), "/j01.config.yaml")),
-        ),
-        (
-            "j02",
-            include_str!(concat!(env!("OUT_DIR"), "/j02.config.yaml")),
-        ),
-        (
-            "j03",
-            include_str!(concat!(env!("OUT_DIR"), "/j03.config.yaml")),
-        ),
-    ]);
+static NPP_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/npp.config.yaml"));
+static J01_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j01.config.yaml"));
+static J02_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j02.config.yaml"));
+static J03_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j03.config.yaml"));
+
+pub fn get_default_content(satid: &str) -> Option<&'static str> {
+    match satid {
+        "npp" => Some(NPP_CONFIG),
+        "j01" => Some(J01_CONFIG),
+        "j02" => Some(J02_CONFIG),
+        "j03" => Some(J03_CONFIG),
+        _ => None,
+    }
 }
 
-pub fn get_default_content(satid: &str) -> Option<String> {
-    DEFAULT_CONFIG.get(satid).map(|s| (*s).to_string())
-}
-
-pub fn get_default(satid: &str) -> Result<Config> {
-    match DEFAULT_CONFIG.get(satid) {
-        Some(dat) => Config::with_data(dat),
-        None => bail!("No default config for satellite id {satid}"),
+pub fn get_default(satid: &str) -> Result<Option<Config>> {
+    match get_default_content(satid) {
+        Some(cfg) => Ok(Some(Config::with_data(cfg)?)),
+        None => Ok(None),
     }
 }

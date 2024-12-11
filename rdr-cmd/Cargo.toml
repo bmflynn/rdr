@@ -1,0 +1,13 @@
+[package]
+name = "rdr-cmd"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.7", features = ["derive"] }
+tracing-subscriber = "0.3"

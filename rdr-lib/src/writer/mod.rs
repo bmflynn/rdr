@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
 use hdf5::{
     types::{FixedAscii, VarLenAscii},
     File,
@@ -15,6 +14,7 @@ use ndarray::{arr1, arr2, Dim};
 
 use crate::{
     config::{Config, ProductSpec, SatSpec},
+    error::Result,
     rdr::{ApidInfo, Rdr},
     utils::format_epoch,
 };
@@ -25,10 +25,8 @@ macro_rules! wattstr {
         $obj.new_attr_builder()
             .with_data::<'_, _, _, Dim<[usize; 2]>>(&arr2(&[[FixedAscii::<$maxlen>::from_ascii(
                 &(($value.clone())[..std::cmp::min($maxlen, $value.len())]),
-            )
-            .with_context(|| format!("setting str data attr {} with value {}", $name, $value))?]]))
-            .create($name)
-            .with_context(|| format!("creating str data attr {} with value {}", $name, $value))?;
+            )?]]))
+            .create($name)?
     };
 }
 
@@ -37,8 +35,7 @@ macro_rules! wattu64 {
     ($obj:expr, $name:expr, $value:expr) => {
         $obj.new_attr_builder()
             .with_data::<'_, _, u64, Dim<[usize; 2]>>(&arr2(&[[$value]]))
-            .create($name)
-            .with_context(|| format!("creating str data attr {} with value {}", $name, $value))?;
+            .create($name)?
     };
 }
 
@@ -62,7 +59,7 @@ pub fn write_hdf5(config: &Config, rdrs: &[Rdr], created: Epoch, dest: &Path) ->
         .map(|p| (p.product_id.clone(), p))
         .collect::<HashMap<String, ProductSpec>>();
 
-    let file = File::create(&fpath).with_context(|| format!("opening {fpath:?}"))?;
+    let file = File::create(&fpath)?;
 
     wattstr!(file, "Distributor", config.origin, 4);
     wattstr!(file, "Mission_Name", config.satellite.mission.clone(), 10);
@@ -71,9 +68,8 @@ pub fn write_hdf5(config: &Config, rdrs: &[Rdr], created: Epoch, dest: &Path) ->
     wattstr!(file, "N_HDF_Creation_Date", attr_date(created), 8);
     wattstr!(file, "N_HDF_Creation_Time", attr_time(created), 14);
 
-    file.create_group("All_Data").context("creating All_Data")?;
-    file.create_group("Data_Products")
-        .context("creating Data_Products")?;
+    file.create_group("All_Data")?;
+    file.create_group("Data_Products")?;
 
     for (idx, rdr) in rdrs.iter().enumerate() {
         let product = products.get(&rdr.product_id).unwrap();
@@ -136,8 +132,7 @@ fn write_rdr_to_alldata(
     product: &ProductSpec,
 ) -> Result<String> {
     if file.group("All_Data").is_err() {
-        file.create_group("All_Data")
-            .with_context(|| "h5 group create error name=All_Data".to_string())?;
+        file.create_group("All_Data")?;
     }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
@@ -145,8 +140,7 @@ fn write_rdr_to_alldata(
     );
     file.new_dataset_builder()
         .with_data(&arr1(&rdr.compile()[..]))
-        .create(name.clone().as_str())
-        .with_context(|| format!("h5 dataset create error name={name}"))?;
+        .create(name.clone().as_str())?;
     Ok(name)
 }
 
@@ -201,27 +195,22 @@ fn set_product_dataset_attrs(
         let apid = apids
             .get(name)
             .expect("apid must be present because names are created from same map");
-        let ascii = VarLenAscii::from_ascii(apid.name.as_bytes())
-            .with_context(|| format!("h5 attr ascii error name={name} val[{i}]={apid:?}"))?;
+        let ascii = VarLenAscii::from_ascii(apid.name.as_bytes())?;
         pkt_type_arr.push(ascii);
         pkt_type_cnt_arr.push(apid.pkts_received.into());
     }
     dataset
         .new_attr::<VarLenAscii>()
         .shape([pkt_type_arr.len(), 1])
-        .create(name)
-        .with_context(|| format!("h5 attr create error name={name}"))?
-        .write_raw(&pkt_type_arr)
-        .with_context(|| format!("h5 attr write error name={name}"))?;
+        .create(name)?
+        .write_raw(&pkt_type_arr)?;
 
     let name = "N_Packet_Type_Count";
     dataset
         .new_attr::<u64>()
         .shape([pkt_type_cnt_arr.len(), 1])
-        .create(name)
-        .with_context(|| format!("h5 attr create error name={name}"))?
-        .write_raw(&pkt_type_cnt_arr)
-        .with_context(|| format!("h5 attr write error name={name}"))?;
+        .create(name)?
+        .write_raw(&pkt_type_cnt_arr)?;
 
     // TODO: Compute missing percent.
     // This should be based on received vs. expected packet counts
@@ -229,10 +218,8 @@ fn set_product_dataset_attrs(
     dataset
         .new_attr::<f32>()
         .shape([1, 1])
-        .create(name)
-        .with_context(|| format!("h5 attr create error name={name} val={val}"))?
-        .write_raw(&[val])
-        .with_context(|| format!("h5 attr write error name={name} val={val}"))?;
+        .create(name)?
+        .write_raw(&[val])?;
 
     Ok(())
 }
@@ -246,8 +233,7 @@ fn write_rdr_to_dataproducts(
 ) -> Result<()> {
     let group_name = format!("Data_Products/{}", product.short_name);
     if file.group(&group_name).is_err() {
-        file.create_group(&group_name)
-            .with_context(|| format!("h5 group create error name={group_name}"))?;
+        file.create_group(&group_name)?;
     }
     let mut writer = hdfc::DataProductsRefWriter::default();
     let dataset_path = writer.write_ref(file, product, src_path)?;
@@ -278,23 +264,16 @@ fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductS
         return Ok(());
     }
     let name = format!("/Data_Products/{0}/{0}_Aggr", product.short_name);
-    let group = file
-        .create_group(&name)
-        .with_context(|| format!("h5 group create error name={name}"))?;
+    let group = file.create_group(&name)?;
 
     for (name, val) in [
         ("AggregateBeginningOrbitNumber", 0usize),
         ("AggregateEndingOrbitNumber", 0usize),
         ("AggregateNumberGranules", rdrs.len()),
     ] {
-        let attr = group
-            .new_attr::<usize>()
-            .shape([1, 1])
-            .create(name)
-            .with_context(|| format!("h5 attr create error name={name} val={val}"))?;
+        let attr = group.new_attr::<usize>().shape([1, 1]).create(name)?;
 
-        attr.write_raw(&[val])
-            .with_context(|| format!("h5 attr write error name={name} val={val}"))?;
+        attr.write_raw(&[val])?;
     }
 
     let mut start_rdr = &rdrs[0];
@@ -321,17 +300,11 @@ fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductS
         ("AggregateEndingTime", format_epoch(end_dt, "%H:%M:%S.%fZ")),
         ("AggregateEndingGranuleID", granule_id(sat, end_rdr)),
     ] {
-        let attr = group
-            .new_attr::<VarLenAscii>()
-            .shape([1, 1])
-            .create(name)
-            .with_context(|| format!("h5 attr create error name={name} val={val}"))?;
+        let attr = group.new_attr::<VarLenAscii>().shape([1, 1]).create(name)?;
 
-        let ascii = VarLenAscii::from_ascii(&val)
-            .with_context(|| format!("h5 attr ascii error name={name} val={val}"))?;
+        let ascii = VarLenAscii::from_ascii(&val)?;
 
-        attr.write_raw(&[ascii])
-            .with_context(|| format!("h5 attr write error name={name} val={val}"))?;
+        attr.write_raw(&[ascii])?;
     }
     Ok(())
 }

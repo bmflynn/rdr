@@ -1,33 +1,24 @@
-[package]
+[workspace]
+resolver = "2"
+members = ["rdr-lib", "rdr-cmd"]
+default-members = ["rdr-lib", "rdr-cmd"]
+
+[workspace.package]
 name = "rdr"
 version = "0.1.0-beta.2"
 edition = "2021"
-description = "JPSS HDF5 Raw-Data-Record (RDR) Utility"
+description = "JPSS HDF5 Raw-Data-Record (RDR) Utilities"
 authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
 repository = "https://github.com/bmflynn/rdr"
 license-file = "LICENSE.txt"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-anyhow = "1.0"
+[workspace.dependencies]
+ccsds = { path = "../ccsds-rs/ccsds-lib" }
+hifitime = "4.0.1"
 hdf5 = { version = "0.8.1" }
 hdf5-src = { version = "0.8.1", features = ["threadsafe"] }
 hdf5-sys = { version = "0.8.1", features = ["static"] }
-hifitime = "4.0.0"
+# To match version used in hdf5 
 ndarray = "0.15.6"
-ccsds = "0.1.0-beta.19"
-crossbeam = "0.8.4"
-lazy_static = "1.4.0"
-leap-seconds = "0.1.0"
-serde = { version = "1.0", features = ["serde_derive"] }
-serde_yaml = "0.9"
-tempfile = "3.10.1"
-tracing = { version = "0.1", features = ["log"] }
-thiserror = "2.0.4"
-tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }
-clap = { version = "4.5.7", features = ["derive"] }
-regex = "1.10.5"
-
-[patch.crates-io]
-ccsds = { path = "../ccsds-rs/ccsds-lib" }
+tracing = "0.1"
+spacecrafts = "0.1.0-beta.4"
