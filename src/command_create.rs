@@ -1,12 +1,13 @@
 use crate::{
     collector::{Collector, PacketTimeIter},
     config::{get_default, Config},
-    time::{time_decoder, LeapSecs},
+    utils::jpss_merge,
     writer,
 };
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use ccsds::spacepacket::{collect_groups, decode_packets, PacketGroup};
 use crossbeam::channel;
+use hifitime::Epoch;
 use std::{
     fs::{create_dir, File},
     io::{BufReader, BufWriter},
@@ -14,7 +15,7 @@ use std::{
     thread,
 };
 use tempfile::TempDir;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Config> {
     match satellite {
@@ -23,16 +24,10 @@ fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Confi
     }
 }
 
-pub fn create_rdr<P>(
-    config: &Config,
-    leap_seconds: LeapSecs,
-    packet_groups: P,
-    dest: &Path,
-) -> Result<()>
+pub fn create_rdr<P>(config: &Config, packet_groups: P, dest: &Path) -> Result<()>
 where
-    P: Iterator<Item = ccsds::PacketGroup> + Send,
+    P: Iterator<Item = PacketGroup> + Send,
 {
-    let decode_iet = time_decoder(leap_seconds).context("initializing time decoder")?;
     let mut collector = Collector::new(config.satellite.clone(), &config.rdrs, &config.products);
 
     if !dest.exists() {
@@ -42,8 +37,8 @@ where
     let (tx, rx) = channel::unbounded();
     thread::scope(|s| {
         s.spawn(move || {
-            for (pkt, pkt_utc, pkt_iet) in PacketTimeIter::new(packet_groups, decode_iet) {
-                let complete = collector.add(pkt_utc, pkt_iet, pkt);
+            for (pkt, epoch) in PacketTimeIter::new(packet_groups) {
+                let complete = collector.add(epoch, pkt);
                 if let Some(rdrs) = complete {
                     debug!("collected {}", &rdrs[0]);
                     let _ = tx.send(rdrs);
@@ -56,7 +51,7 @@ where
         });
 
         s.spawn(move || {
-            let created = Utc::now();
+            let created = Epoch::now().expect("failed to get system time");
             for rdrs in rx {
                 match writer::write_hdf5(config, &rdrs, created, dest).context("writing h5") {
                     Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0]),
@@ -72,26 +67,17 @@ where
 }
 
 pub fn merge<P: AsRef<Path>>(paths: &[P], dest: P) -> Result<()> {
-    let paths: Vec<String> = paths
-        .iter()
-        .map(|p| p.as_ref().to_string_lossy().to_string())
-        .collect();
+    let paths: Vec<PathBuf> = paths.iter().map(|p| p.as_ref().to_path_buf()).collect();
     let dest = dest.as_ref();
     let writer = BufWriter::new(
         File::create(dest).with_context(|| format!("creating merge dest file: {dest:?}"))?,
     );
-    Ok(
-        ccsds::merge_by_timecode(&paths, &ccsds::CDSTimeDecoder, writer)
-            .context("merging spacepackets")?,
-    )
+    Ok(jpss_merge(&paths, writer)?)
 }
-
-const LEAPSEC_DOWNLOAD_URL: &str = "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list";
 
 pub fn create(
     satellite: Option<String>,
     config: Option<PathBuf>,
-    leap_seconds: Option<PathBuf>,
     input: &[PathBuf],
     output: PathBuf,
 ) -> Result<()> {
@@ -100,16 +86,6 @@ pub fn create(
         if !input.exists() {
             bail!("Input does not exist: {input:?}");
         }
-    }
-
-    let leaps = LeapSecs::new(leap_seconds.as_deref()).context("creating leapsecs db")?;
-    info!("leap seconds {leaps}");
-    if leaps.expired {
-        warn!(
-            "leap seconds db is expired. Consider downloading an updated \
-               one from the following URL and providing the --leap-seconds <path> flag: {}",
-            LEAPSEC_DOWNLOAD_URL
-        );
     }
 
     // Get single input, merging multiple inputs if necessary
@@ -125,9 +101,10 @@ pub fn create(
         input[0].clone()
     };
     let file = BufReader::new(File::open(input)?);
-    let groups = ccsds::read_packet_groups(file).flatten();
+    let packets = decode_packets(file).filter_map(Result::ok);
+    let groups = collect_groups(packets).filter_map(Result::ok);
 
-    create_rdr(&config, leaps, groups, &output)?;
+    create_rdr(&config, groups, &output)?;
 
     if let Some(dir) = tmpdir {
         debug!(dir = ?dir.path(), "removing tempdir");

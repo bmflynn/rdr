@@ -1,14 +1,18 @@
+use crate::{
+    rdr::{ApidInfo, PacketTracker, StaticHeader},
+    utils::{jpss_merge, now},
+};
+use anyhow::{bail, Context, Result};
+use ccsds::spacepacket::decode_packets;
+use hdf5::{File as H5File, Group};
+use hifitime::Epoch;
 use std::{
     collections::HashMap,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
 };
-
-use crate::rdr::{ApidInfo, PacketTracker, StaticHeader};
-use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
-use hdf5::{File as H5File, Group};
 use tempfile::TempDir;
 use tracing::{debug, info, trace, warn};
 
@@ -19,8 +23,11 @@ enum DatasetType<'a> {
     Spacecraft(u16),
 }
 
-fn dataset_name(scid: u8, type_: &DatasetType, created: DateTime<Utc>) -> String {
-    let dstr = created.format("%y%j%H%M%S");
+fn dataset_name(scid: u8, type_: &DatasetType, created: Epoch) -> String {
+    let dstr = hifitime::efmt::Formatter::new(
+        created,
+        hifitime::efmt::Format::from_str("%y%j%H%M%S").expect("invalid time format"),
+    );
     match type_ {
         DatasetType::Science(path) => {
             if path.contains("VIIRS") {
@@ -106,7 +113,7 @@ fn dump_group(
     scid: u8,
     path: &str,
     group: &Group,
-    created: DateTime<Utc>,
+    created: Epoch,
 ) -> Result<Option<PathBuf>> {
     info!("dumping {path} to {workdir:?}");
     let files = dump_datasets_to(workdir, path, group)?;
@@ -116,8 +123,8 @@ fn dump_group(
     let destpath = workdir.join(dataset_name(scid, &DatasetType::Science(path), created));
     debug!("merging {} files to {destpath:?}", files.len());
     let dest = File::create(&destpath).with_context(|| format!("Creating {destpath:?}"))?;
-    ccsds::merge_by_timecode(&files, &ccsds::CDSTimeDecoder, dest)
-        .with_context(|| format!("Merging {} files", files.len()))?;
+
+    jpss_merge(&files, dest).with_context(|| format!("Merging {} files", files.len()))?;
 
     Ok(Some(destpath))
 }
@@ -139,11 +146,11 @@ fn get_spacecraft(path: &Path) -> u8 {
     }
 }
 
-pub fn split_spacecraft(fpath: &Path, scid: u8, created: DateTime<Utc>) -> Result<Vec<PathBuf>> {
+pub fn split_spacecraft(fpath: &Path, scid: u8, created: Epoch) -> Result<Vec<PathBuf>> {
     let mut files: HashMap<u16, File> = HashMap::default();
     let mut paths: Vec<PathBuf> = Vec::default();
 
-    for packet in ccsds::read_packets(&File::open(fpath)?) {
+    for packet in decode_packets(&File::open(fpath)?) {
         if let Err(err) = packet {
             bail!("error while reading packets: {err}");
         }
@@ -172,7 +179,7 @@ pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
     }
     let scid = get_spacecraft(input);
     let workdir = TempDir::new()?;
-    let created = Utc::now();
+    let created = now();
 
     let file = H5File::open(input).context("Opening input")?;
 

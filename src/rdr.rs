@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
-use ccsds::{Apid, Packet};
-use chrono::{DateTime, Utc};
+use ccsds::spacepacket::{Apid, Packet};
 use hdf5::{types::FixedAscii, Dataset, Group};
+use hifitime::Epoch;
 use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -67,7 +67,7 @@ pub struct Rdr {
     /// Common RDR packet storage area
     pub storage: VecDeque<Packet>,
     /// Time this RDR was created
-    pub created: DateTime<Utc>,
+    pub created: Epoch,
 }
 
 impl Rdr {
@@ -83,7 +83,7 @@ impl Rdr {
             apids: HashMap::default(),
             trackers: HashMap::default(),
             storage: VecDeque::default(),
-            created: Utc::now(),
+            created: Epoch::now().expect("failed to get system time"),
         };
 
         for apid in &product.apids {
@@ -193,9 +193,8 @@ impl Rdr {
         dat
     }
     #[must_use]
-    pub fn granule_dt(&self) -> DateTime<Utc> {
-        let start_ns = i64::try_from(self.begin_time_utc * 1000).unwrap_or(0);
-        DateTime::from_timestamp_nanos(start_ns)
+    pub fn granule_dt(&self) -> Epoch {
+        Epoch::from_unix_milliseconds(self.begin_time_utc as f64)
     }
 }
 
@@ -335,7 +334,7 @@ pub struct Meta {
     pub distributor: String,
     pub mission: String,
     pub dataset_source: String,
-    pub created: DateTime<Utc>,
+    pub created: Epoch,
     pub platform: String,
     pub products: HashMap<String, ProductMeta>,
     pub granules: HashMap<String, Vec<GranuleMeta>>,
@@ -350,7 +349,7 @@ impl Meta {
             mission: attr_string!(&file, "Mission_Name"),
             dataset_source: attr_string!(&file, "N_Dataset_Source"),
             platform: attr_string!(&file, "Platform_Short_Name"),
-            created: Utc::now(),
+            created: Epoch::now().expect("failed to get system time"),
             products: HashMap::default(),
             granules: HashMap::default(),
         };
@@ -407,7 +406,7 @@ impl Meta {
             distributor: config.distributor.clone(),
             mission: config.satellite.mission.clone(),
             dataset_source: config.distributor.clone(),
-            created: Utc::now(),
+            created: Epoch::now().expect("failed to get system time"),
             platform: config.satellite.short_name.clone(),
             products: products
                 .iter()
@@ -541,7 +540,6 @@ impl ApidInfo {
         Ok(info)
     }
 
-    #[must_use]
     pub fn all_from_bytes(data: &[u8]) -> Result<Vec<Self>> {
         Ok(data
             .chunks(ApidInfo::LEN)
@@ -574,7 +572,6 @@ impl PacketTracker {
         buf
     }
 
-    #[must_use]
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < PacketTracker::LEN {
             bail!("not enough bytes");

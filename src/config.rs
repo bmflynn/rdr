@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use ccsds::Apid;
+use ccsds::spacepacket::Apid;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

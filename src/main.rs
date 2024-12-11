@@ -1,11 +1,11 @@
 mod collector;
-mod command_create;
-mod command_dump;
 mod command_aggr;
+mod command_create;
 mod command_deaggr;
+mod command_dump;
 mod config;
-mod rdr;
-mod time;
+pub mod rdr;
+mod utils;
 mod writer;
 
 use anyhow::Result;
@@ -67,15 +67,6 @@ enum Commands {
         #[command(flatten)]
         configs: Configs,
 
-        /// leap-seconds.list file to use.
-        ///
-        /// A default list file is included at build time,
-        /// however, if the included list file becomes out of data this option can be used
-        /// to specify one. A list file can be obtained from IERS at
-        /// <https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list>.
-        #[arg(short, long)]
-        leap_seconds: Option<PathBuf>,
-
         /// Output directory.
         #[arg(short, long, value_name = "path", default_value = "output")]
         output: PathBuf,
@@ -91,14 +82,14 @@ enum Commands {
         input: PathBuf,
     },
     /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
-    #[command(hide=true)]
+    #[command(hide = true)]
     Agg {
         /// One or more RDR file to include in the output
         #[arg(value_name = "path")]
         input: Vec<PathBuf>,
     },
     /// Deaggregate an aggregated RDR.
-    #[command(hide=true)]
+    #[command(hide = true)]
     Deagg {
         /// RDR file to deaggregate into native resolution RDRs.
         #[arg(value_name = "path")]
@@ -126,17 +117,10 @@ fn main() -> Result<()> {
     match cli.commands {
         Commands::Create {
             configs,
-            leap_seconds,
             input,
             output,
         } => {
-            crate::command_create::create(
-                configs.satellite,
-                configs.config,
-                leap_seconds,
-                &input,
-                output,
-            )?;
+            crate::command_create::create(configs.satellite, configs.config, &input, output)?;
         }
         Commands::Dump { input } => {
             dump(&input, true)?;

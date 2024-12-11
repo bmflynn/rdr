@@ -6,16 +6,17 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use hdf5::{
     types::{FixedAscii, VarLenAscii},
     File,
 };
+use hifitime::Epoch;
 use ndarray::{arr1, arr2, Dim};
 
 use crate::{
     config::{Config, ProductSpec, SatSpec},
     rdr::{ApidInfo, Rdr},
+    utils::format_epoch,
 };
 
 /// Write a string attr with specific len with shape [1, 1]
@@ -45,12 +46,7 @@ macro_rules! wattu64 {
 ///
 /// # Errors
 /// All errors creating or wri
-pub fn write_hdf5(
-    config: &Config,
-    rdrs: &[Rdr],
-    created: DateTime<Utc>,
-    dest: &Path,
-) -> Result<PathBuf> {
+pub fn write_hdf5(config: &Config, rdrs: &[Rdr], created: Epoch, dest: &Path) -> Result<PathBuf> {
     let fpath = dest.join(filename(
         &config.satellite.id,
         &config.origin,
@@ -72,8 +68,8 @@ pub fn write_hdf5(
     wattstr!(file, "Mission_Name", config.satellite.mission.clone(), 10);
     wattstr!(file, "Platform_Short_Name", config.satellite.id.clone(), 3);
     wattstr!(file, "N_Dataset_Source", config.origin, 4);
-    wattstr!(file, "N_HDF_Creation_Date", attr_date(&created), 8);
-    wattstr!(file, "N_HDF_Creation_Time", attr_time(&created), 14);
+    wattstr!(file, "N_HDF_Creation_Date", attr_date(created), 8);
+    wattstr!(file, "N_HDF_Creation_Time", attr_time(created), 14);
 
     file.create_group("All_Data").context("creating All_Data")?;
     file.create_group("Data_Products")
@@ -97,19 +93,20 @@ pub fn write_hdf5(
     Ok(fpath)
 }
 
-fn attr_date(dt: &DateTime<Utc>) -> String {
-    dt.format("%Y%m%d").to_string()
+fn attr_date(dt: Epoch) -> String {
+    format_epoch(dt, "%Y%m%d")
 }
 
-fn attr_time(dt: &DateTime<Utc>) -> String {
-    dt.format("%H:%M:%S.%fZ").to_string()
+fn attr_time(dt: Epoch) -> String {
+    format_epoch(dt, "%H:%M:%S.%fZ")
 }
 
 /// Create an IDPS style RDR filename
-fn filename(satid: &str, origin: &str, mode: &str, created: DateTime<Utc>, rdrs: &[Rdr]) -> String {
+fn filename(satid: &str, origin: &str, mode: &str, created: Epoch, rdrs: &[Rdr]) -> String {
+    // dedup product ids
     let mut product_ids = rdrs
         .iter()
-        .map(|r| r.product_id.clone())
+        .flat_map(|r| std::iter::once(r.product_id.clone()).chain(r.packed_with.clone()))
         .collect::<HashSet<String>>()
         .iter()
         .cloned()
@@ -123,10 +120,10 @@ fn filename(satid: &str, origin: &str, mode: &str, created: DateTime<Utc>, rdrs:
         "{}_{}_d{}_t{}_e{}_c{}_{}u_{}.h5",
         product_ids.join("-"),
         satid,
-        &start.format("%Y%m%d").to_string(),
-        &start.format("%H%M%S%f").to_string()[..7],
-        &end.format("%H%M%S%f").to_string()[..7],
-        &created.format("%Y%m%d%H%M%S%f").to_string()[..20],
+        format_epoch(start, "%Y%m%d"),
+        &format_epoch(start, "%H%M%S%f")[..7],
+        &format_epoch(end, "%H%M%S%f")[..7],
+        &format_epoch(created, "%Y%m%d%H%M%S%f")[..20],
         &origin[..3],
         mode,
     )
@@ -169,12 +166,12 @@ fn set_product_dataset_attrs(
         .unwrap_or_else(|_| panic!("expected just written dataset {dataset_path} to exist"));
 
     let gran_id = granule_id(&config.satellite, rdr);
-    wattstr!(dataset, "Beginning_Date", attr_date(&start_dt), 8);
-    wattstr!(dataset, "Beginning_Time", attr_time(&start_dt), 14);
-    wattstr!(dataset, "Ending_Date", attr_date(&end_dt), 8);
-    wattstr!(dataset, "Ending_Time", attr_time(&end_dt), 14);
-    wattstr!(dataset, "N_Creation_Date", attr_date(&rdr.created), 8);
-    wattstr!(dataset, "N_Creation_Time", attr_time(&rdr.created), 14);
+    wattstr!(dataset, "Beginning_Date", attr_date(start_dt), 8);
+    wattstr!(dataset, "Beginning_Time", attr_time(start_dt), 14);
+    wattstr!(dataset, "Ending_Date", attr_date(end_dt), 8);
+    wattstr!(dataset, "Ending_Time", attr_time(end_dt), 14);
+    wattstr!(dataset, "N_Creation_Date", attr_date(rdr.created), 8);
+    wattstr!(dataset, "N_Creation_Time", attr_time(rdr.created), 14);
     wattstr!(dataset, "N_Granule_Status", "N/A".to_string(), 3);
     wattstr!(dataset, "N_Granule_Version", ver, 2);
     wattstr!(dataset, "N_JPSS_Document_Ref", String::new(), 52);
@@ -193,14 +190,17 @@ fn set_product_dataset_attrs(
     wattu64!(dataset, "N_Beginning_Time_IET", rdr.begin_time_iet);
     wattu64!(dataset, "N_Ending_Time_IET", rdr.end_time_iet);
 
-    let apids: HashMap<&str, &ApidInfo> = rdr.apids.values().map(|a| (a.name.as_str(), a)).collect();
+    let apids: HashMap<&str, &ApidInfo> =
+        rdr.apids.values().map(|a| (a.name.as_str(), a)).collect();
     let mut names: Vec<&str> = apids.keys().copied().collect();
     names.sort_unstable();
     let name = "N_Packet_Type";
     let mut pkt_type_arr: Vec<VarLenAscii> = Vec::default();
     let mut pkt_type_cnt_arr: Vec<u64> = Vec::default();
     for (i, name) in names.iter().enumerate() {
-        let apid = apids.get(name).expect("apid must be present because names are created from same map");
+        let apid = apids
+            .get(name)
+            .expect("apid must be present because names are created from same map");
         let ascii = VarLenAscii::from_ascii(apid.name.as_bytes())
             .with_context(|| format!("h5 attr ascii error name={name} val[{i}]={apid:?}"))?;
         pkt_type_arr.push(ascii);
@@ -257,12 +257,11 @@ fn write_rdr_to_dataproducts(
     Ok(())
 }
 
-fn granule_dt(utc: u64) -> DateTime<Utc> {
-    let start_ns = i64::try_from(utc * 1000).unwrap_or(0);
-    DateTime::from_timestamp_nanos(start_ns)
+fn granule_dt(utc: u64) -> Epoch {
+    Epoch::from_utc_seconds(utc as f64 / 1_000_000.0)
 }
 
-fn granule_dt_range(rdr: &Rdr) -> (DateTime<Utc>, DateTime<Utc>) {
+fn granule_dt_range(rdr: &Rdr) -> (Epoch, Epoch) {
     (granule_dt(rdr.begin_time_utc), granule_dt(rdr.end_time_utc))
 }
 
@@ -312,20 +311,14 @@ fn write_aggr_group(file: &File, sat: &SatSpec, rdrs: &[Rdr], product: &ProductS
     let end_dt = granule_dt(end_rdr.end_time_utc);
 
     for (name, val) in [
-        (
-            "AggregateBeginningDate",
-            start_dt.format("%Y%m%d").to_string(),
-        ),
+        ("AggregateBeginningDate", format_epoch(start_dt, "%Y%m%d")),
         (
             "AggregateBeginningTime",
-            start_dt.format("%H:%M:%S.%fZ").to_string(),
+            format_epoch(start_dt, "%H:%M:%S.%fZ"),
         ),
         ("AggregateBeginningGranuleID", granule_id(sat, start_rdr)),
-        ("AggregateEndingDate", end_dt.format("%Y%m%d").to_string()),
-        (
-            "AggregateEndingTime",
-            end_dt.format("%H:%M:%S.%fZ").to_string(),
-        ),
+        ("AggregateEndingDate", format_epoch(end_dt, "%Y%m%d")),
+        ("AggregateEndingTime", format_epoch(end_dt, "%H:%M:%S.%fZ")),
         ("AggregateEndingGranuleID", granule_id(sat, end_rdr)),
     ] {
         let attr = group
@@ -348,11 +341,22 @@ mod tests {
     use super::*;
 
     mod filename {
-        use std::collections::{HashMap, VecDeque};
+        use std::{
+            collections::{HashMap, VecDeque},
+            str::FromStr,
+        };
 
-        use crate::{config::get_default, rdr::Rdr, rdr::StaticHeader};
+        use crate::{
+            config::get_default,
+            rdr::{Rdr, StaticHeader},
+            utils::now,
+        };
 
         use super::*;
+
+        fn parse_epoch(fmt: &str) -> Epoch {
+            Epoch::from_str(fmt).unwrap()
+        }
 
         #[test]
         fn packed_rdrs() {
@@ -363,24 +367,25 @@ mod tests {
                 .filter(|p| p.product_id == "RVIRS")
                 .collect::<Vec<_>>()[0];
 
-            let dt = "2000-01-01T12:13:14Z".parse::<DateTime<Utc>>().unwrap();
+            let dt = parse_epoch("2000-01-01T12:13:14Z");
+            let ts = (dt.to_unix_seconds() * 1_000_000.0) as u64;
             let fname = filename(
                 "npp",
                 "origin",
                 "ops",
-                Utc::now(),
+                now(),
                 &[Rdr {
                     product_id: primary.product_id.clone(),
                     packed_with: vec!["RNSCA".to_string()],
-                    begin_time_iet: dt.timestamp_micros() as u64,
-                    end_time_iet: dt.timestamp_micros() as u64 + primary.gran_len,
-                    begin_time_utc: dt.timestamp_micros() as u64,
-                    end_time_utc: dt.timestamp_micros() as u64 + primary.gran_len,
+                    begin_time_iet: ts,
+                    end_time_iet: ts + primary.gran_len,
+                    begin_time_utc: ts,
+                    end_time_utc: ts + primary.gran_len,
                     header: StaticHeader::default(),
                     apids: HashMap::default(),
                     trackers: HashMap::default(),
                     storage: VecDeque::default(),
-                    created: Utc::now(),
+                    created: now(),
                 }],
             );
 
@@ -397,24 +402,25 @@ mod tests {
                 .filter(|p| p.product_id == "RVIRS")
                 .collect::<Vec<_>>()[0];
 
-            let dt = "2000-01-01T12:13:14Z".parse::<DateTime<Utc>>().unwrap();
+            let dt = parse_epoch("2000-01-01T12:13:14Z");
+            let ts = (dt.to_unix_seconds() * 1_000_000.0) as u64;
             let fname = filename(
                 "npp",
                 "origin",
                 "ops",
-                Utc::now(),
+                now(),
                 &[Rdr {
                     product_id: primary.product_id.clone(),
                     packed_with: Vec::default(),
-                    begin_time_iet: dt.timestamp_micros() as u64,
-                    end_time_iet: dt.timestamp_micros() as u64 + primary.gran_len,
-                    begin_time_utc: dt.timestamp_micros() as u64,
-                    end_time_utc: dt.timestamp_micros() as u64 + primary.gran_len,
+                    begin_time_iet: ts,
+                    end_time_iet: ts + primary.gran_len,
+                    begin_time_utc: ts,
+                    end_time_utc: ts + primary.gran_len,
                     header: StaticHeader::default(),
                     apids: HashMap::default(),
                     trackers: HashMap::default(),
                     storage: VecDeque::default(),
-                    created: Utc::now(),
+                    created: now(),
                 }],
             );
 

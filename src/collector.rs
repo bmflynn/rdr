@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use ccsds::{Apid, Packet, PacketGroup};
+use ccsds::spacepacket::{Apid, Packet, PacketGroup, TimecodeDecoder};
+use hifitime::{Epoch, Unit};
 use tracing::trace;
 
 use crate::{
     config::{ProductSpec, RdrSpec, SatSpec},
     rdr::Rdr,
-    time::TimeFcn,
 };
 
 /// Collects individual product Rdr data.
@@ -62,9 +62,11 @@ impl Collector {
         collector
     }
 
-    fn gran_times(&self, pkt_utc: u64, pkt_iet: u64, spec: &ProductSpec) -> (u64, u64) {
+    fn gran_times(&self, epoch: Epoch, spec: &ProductSpec) -> (u64, u64) {
         let gran_len = spec.gran_len;
         let base_time = self.sat.base_time;
+        let pkt_utc = (epoch.to_utc_seconds() * 1000.0) as u64;
+        let pkt_iet = epoch.to_tai(Unit::Millisecond) as u64;
 
         (
             (pkt_utc / gran_len) * gran_len,
@@ -97,14 +99,14 @@ impl Collector {
         packed
     }
 
-    pub fn add(&mut self, pkt_utc: u64, pkt_iet: u64, pkt: Packet) -> Option<Vec<Rdr>> {
+    pub fn add(&mut self, epoch: Epoch, pkt: Packet) -> Option<Vec<Rdr>> {
         if !self.ids.contains_key(&pkt.header.apid) {
             return None; // apid has no configured product
         }
         // The product id and product for the packets' apid
         let prod_id = &self.ids[&pkt.header.apid];
         let product = self.products.get(prod_id).expect("spec for existing id");
-        let (gran_utc, gran_iet) = self.gran_times(pkt_utc, pkt_iet, product);
+        let (gran_utc, gran_iet) = self.gran_times(epoch, product);
 
         let key = (prod_id.clone(), gran_iet);
 
@@ -169,19 +171,22 @@ pub struct PacketTimeIter<P>
 where
     P: Iterator<Item = PacketGroup>,
 {
-    decode_iet: Box<TimeFcn>,
+    decode_iet: TimecodeDecoder,
     groups: P,
-    cache: VecDeque<(Packet, u64, u64)>,
+    cache: VecDeque<(Packet, Epoch)>,
 }
 
 impl<P> PacketTimeIter<P>
 where
     P: Iterator<Item = PacketGroup>,
 {
-    pub fn new(groups: P, ied_decoder: Box<TimeFcn>) -> Self {
+    pub fn new(groups: P) -> Self {
         PacketTimeIter {
             cache: VecDeque::default(),
-            decode_iet: ied_decoder,
+            decode_iet: TimecodeDecoder::new(ccsds::timecode::Format::Cds {
+                num_day: 2,
+                num_submillis: 2,
+            }),
             groups,
         }
     }
@@ -191,7 +196,7 @@ impl<P> Iterator for PacketTimeIter<P>
 where
     P: Iterator<Item = PacketGroup>,
 {
-    type Item = (Packet, u64, u64);
+    type Item = (Packet, Epoch);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.cache.is_empty() {
@@ -201,10 +206,10 @@ where
                 "should never get empty packet group"
             );
             let first = &group.packets[0];
-            let (utc, iet) = (self.decode_iet)(first);
+            let epoch = self.decode_iet.decode(&first).unwrap();
 
             for pkt in group.packets {
-                self.cache.push_back((pkt, utc, iet));
+                self.cache.push_back((pkt, epoch));
             }
         }
         self.cache.pop_front()
