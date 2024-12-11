@@ -1,13 +1,10 @@
-use crate::{
-    collector::{Collector, PacketTimeIter},
-    config::{get_default, Config},
-    utils::jpss_merge,
-    writer,
-};
 use anyhow::{bail, Context, Result};
 use ccsds::spacepacket::{collect_groups, decode_packets, PacketGroup};
 use crossbeam::channel;
-use hifitime::Epoch;
+use rdr::{
+    config::{get_default, Config},
+    jpss_merge, write_hdf5, Collector, PacketTimeIter, Time,
+};
 use std::{
     fs::{create_dir, File},
     io::{BufReader, BufWriter},
@@ -17,10 +14,12 @@ use std::{
 use tempfile::TempDir;
 use tracing::{debug, error, info};
 
-fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Config> {
+fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Option<Config>> {
     match satellite {
         Some(satid) => get_default(&satid).context("getting default config"),
-        None => Config::with_path(&fpath.unwrap()).context("Invalid config"),
+        None => Ok(Some(
+            Config::with_path(&fpath.unwrap()).context("Invalid config")?,
+        )),
     }
 }
 
@@ -37,8 +36,8 @@ where
     let (tx, rx) = channel::unbounded();
     thread::scope(|s| {
         s.spawn(move || {
-            for (pkt, epoch) in PacketTimeIter::new(packet_groups) {
-                let complete = collector.add(epoch, pkt);
+            for (pkt, pkt_time) in PacketTimeIter::new(packet_groups) {
+                let complete = collector.add(&pkt_time, pkt);
                 if let Some(rdrs) = complete {
                     debug!("collected {}", &rdrs[0]);
                     let _ = tx.send(rdrs);
@@ -51,9 +50,9 @@ where
         });
 
         s.spawn(move || {
-            let created = Epoch::now().expect("failed to get system time");
+            let created = Time::now();
             for rdrs in rx {
-                match writer::write_hdf5(config, &rdrs, created, dest).context("writing h5") {
+                match write_hdf5(config, &rdrs, &created, dest).context("writing h5") {
                     Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0]),
                     Err(err) => {
                         error!("failed writing {}: {err}", &rdrs[0]);
@@ -81,7 +80,11 @@ pub fn create(
     input: &[PathBuf],
     output: PathBuf,
 ) -> Result<()> {
-    let config = get_config(satellite, config)?;
+    let config = match get_config(satellite, config) {
+        Ok(Some(config)) => config,
+        Ok(None) => bail!("No spacecraft configuration found"),
+        Err(err) => bail!("Failed to lookup config: {err}"),
+    };
     for input in input {
         if !input.exists() {
             bail!("Input does not exist: {input:?}");

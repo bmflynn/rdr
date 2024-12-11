@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-pub fn aggreggate(inputs: &[PathBuf]) -> Result<PathBuf> {
+pub fn aggreggate(_inputs: &[PathBuf]) -> Result<PathBuf> {
     todo!()
 }

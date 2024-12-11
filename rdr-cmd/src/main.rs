@@ -1,12 +1,7 @@
-mod collector;
 mod command_aggr;
 mod command_create;
 mod command_deaggr;
 mod command_dump;
-mod config;
-pub mod rdr;
-mod utils;
-mod writer;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -16,8 +11,7 @@ use std::{
 };
 use tracing_subscriber::EnvFilter;
 
-use crate::command_dump::dump;
-use crate::config::get_default_content;
+use rdr::config::get_default_content;
 
 /// Tool for manipulating JPSS RDR HDF5 files.
 ///
@@ -123,15 +117,15 @@ fn main() -> Result<()> {
             crate::command_create::create(configs.satellite, configs.config, &input, output)?;
         }
         Commands::Dump { input } => {
-            dump(&input, true)?;
+            crate::command_dump::dump(&input, true)?;
         }
         Commands::Config { satellite } => {
             stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;
         }
-        Commands::Agg { input } => {
+        Commands::Agg { .. } => {
             unimplemented!()
         }
-        Commands::Deagg { input } => {
+        Commands::Deagg { .. } => {
             unimplemented!()
         }
     }

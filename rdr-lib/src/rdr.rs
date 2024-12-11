@@ -1,6 +1,5 @@
 use ccsds::spacepacket::{Apid, Packet};
 use hdf5::{types::FixedAscii, Dataset, Group};
-use hifitime::Epoch;
 use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -8,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use crate::error::*;
+use crate::{error::*, Time};
 
 macro_rules! from_bytes4 {
     ($type:ty, $dat:ident, $start:expr) => {
@@ -51,15 +50,9 @@ pub struct Rdr {
     pub product_id: String,
     /// Any other products that are packed with this rdr, .e.g., RNSCA
     pub packed_with: Vec<String>,
-    /// Granule time in IET microseconds
-    pub begin_time_iet: u64,
-    /// Granule time in IET microseconds
-    pub end_time_iet: u64,
-    /// Granule time in IET microseconds
-    pub begin_time_utc: u64,
-    /// Granule time in IET microseconds
-    pub end_time_utc: u64,
-    /// Common RDR static header
+    /// [Time] for this granule
+    pub time: Time,
+    pub gran_len: u64,
     pub header: StaticHeader,
     /// Common RDR ``ApidLists`` for each apid
     pub apids: HashMap<Apid, ApidInfo>,
@@ -68,23 +61,21 @@ pub struct Rdr {
     /// Common RDR packet storage area
     pub storage: VecDeque<Packet>,
     /// Time this RDR was created
-    pub created: Epoch,
+    pub created: Time,
 }
 
 impl Rdr {
-    pub fn new(product: &ProductSpec, sat: &SatSpec, gran_iet: u64, gran_utc: u64) -> Self {
+    pub fn new(product: &ProductSpec, sat: &SatSpec, time: Time) -> Self {
         let mut rdr = Rdr {
             product_id: product.product_id.to_string(),
             packed_with: vec!["RNSCA".to_string()],
-            begin_time_iet: gran_iet,
-            end_time_iet: gran_iet + product.gran_len,
-            begin_time_utc: gran_utc,
-            end_time_utc: gran_utc + product.gran_len,
-            header: StaticHeader::new(gran_iet, sat, product),
+            header: StaticHeader::new(&time, sat, product),
+            gran_len: product.gran_len,
+            time,
             apids: HashMap::default(),
             trackers: HashMap::default(),
             storage: VecDeque::default(),
-            created: Epoch::now().expect("failed to get system time"),
+            created: Time::now(),
         };
 
         for apid in &product.apids {
@@ -104,14 +95,14 @@ impl Rdr {
         rdr
     }
 
-    fn add_tracker(&mut self, gran_iet: u64, pkt: &Packet) {
+    fn add_tracker(&mut self, pkt_time: &Time, pkt: &Packet) {
         let trackers = self.trackers.entry(pkt.header.apid).or_default();
         let offset = match trackers.last() {
             Some(t) => t.offset + t.size,
             None => 0,
         };
         trackers.push(PacketTracker {
-            obs_time: i64::try_from(gran_iet).expect("granule time to fit in i64"),
+            obs_time: pkt_time.iet() as i64,
             sequence_number: i32::from(pkt.header.sequence_id),
             size: i32::try_from(pkt.data.len()).expect("pkt len to fit in i32"),
             offset,
@@ -134,8 +125,8 @@ impl Rdr {
     ///
     /// # Panics
     /// If the packet traker offset overflows
-    pub fn add_packet(&mut self, gran_iet: u64, pkt: Packet) {
-        self.add_tracker(gran_iet, &pkt);
+    pub fn add_packet(&mut self, pkt_time: &Time, pkt: Packet) {
+        self.add_tracker(pkt_time, &pkt);
         self.update_apid_list(&pkt);
         self.storage.push_back(pkt);
 
@@ -189,10 +180,6 @@ impl Rdr {
 
         dat
     }
-    #[must_use]
-    pub fn granule_dt(&self) -> Epoch {
-        Epoch::from_unix_milliseconds(self.begin_time_utc as f64)
-    }
 }
 
 const MAX_STR_LEN: usize = 1024;
@@ -203,17 +190,15 @@ impl Display for Rdr {
             f,
             "Rdr{{product={} granule=({}, {})}}",
             self.product_id,
-            self.granule_dt(),
-            self.begin_time_iet
+            self.time.utc(),
+            self.time.iet(),
         )
     }
 }
 
 macro_rules! attr_string {
     ($obj:expr, $name:expr) => {
-        $obj.attr($name)?
-            .read_2d::<FixedAscii<MAX_STR_LEN>>()?
-            .to_string()
+        $obj.attr($name)?.read_2d::<FixedAscii<MAX_STR_LEN>>()?[[0, 0]].to_string()
     };
 }
 
@@ -257,15 +242,17 @@ impl GranuleMeta {
             .attr("N_Packet_Type")?
             .read_2d::<FixedAscii<MAX_STR_LEN>>()?
             .as_slice()
+            .ok_or(Error::Hdf5Other("failed to read dataset"))?
             .iter()
-            .map(|fa| fa[0].to_string())
+            .map(|fa| fa.to_string())
             .collect();
         let packet_type_count: Vec<u32> = ds
             .attr("N_Packet_Type_Count")?
             .read_2d::<u64>()?
             .as_slice()
+            .ok_or(Error::Hdf5Other("failed to read dataset"))?
             .iter()
-            .map(|v| u32::try_from(v[0]).unwrap())
+            .map(|v| u32::try_from(*v).unwrap())
             .collect();
         Ok(Self {
             instrument: instrument.to_string(),
@@ -320,7 +307,7 @@ pub struct Meta {
     pub distributor: String,
     pub mission: String,
     pub dataset_source: String,
-    pub created: Epoch,
+    pub created: Time,
     pub platform: String,
     pub products: HashMap<String, ProductMeta>,
     pub granules: HashMap<String, Vec<GranuleMeta>>,
@@ -335,7 +322,7 @@ impl Meta {
             mission: attr_string!(&file, "Mission_Name"),
             dataset_source: attr_string!(&file, "N_Dataset_Source"),
             platform: attr_string!(&file, "Platform_Short_Name"),
-            created: Epoch::now().expect("failed to get system time"),
+            created: Time::now(),
             products: HashMap::default(),
             granules: HashMap::default(),
         };
@@ -384,7 +371,7 @@ impl Meta {
             distributor: config.distributor.clone(),
             mission: config.satellite.mission.clone(),
             dataset_source: config.distributor.clone(),
-            created: Epoch::now().expect("failed to get system time"),
+            created: Time::now(),
             platform: config.satellite.short_name.clone(),
             products: products
                 .iter()
@@ -424,7 +411,9 @@ pub struct StaticHeader {
 impl StaticHeader {
     pub const LEN: usize = 72;
 
-    pub fn new(gran_iet: u64, sat: &SatSpec, product: &ProductSpec) -> Self {
+    pub fn new(time: &Time, sat: &SatSpec, product: &ProductSpec) -> Self {
+        let start_iet = time.iet() as i64;
+        let end_iet = start_iet + product.gran_len as i64;
         StaticHeader {
             satellite: sat.id.clone(),
             sensor: product.sensor.clone(),
@@ -434,9 +423,8 @@ impl StaticHeader {
             pkt_tracker_offset: 0,
             ap_storage_offset: 0,
             next_pkt_position: 0,
-            start_boundary: i64::try_from(gran_iet).expect("start_boundary time to fit in i64"),
-            end_boundary: i64::try_from(gran_iet + product.gran_len)
-                .expect("end_boundary time to fit in i64"),
+            start_boundary: start_iet,
+            end_boundary: end_iet,
         }
     }
 

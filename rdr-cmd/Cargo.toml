@@ -8,6 +8,15 @@ repository.workspace = true
 license-file.workspace = true
 
 [dependencies]
+ccsds.workspace = true
+tracing.workspace = true
+hifitime.workspace = true
+hdf5.workspace = true
+
 anyhow = "1.0"
+rdr = { path = "../rdr-lib" }
 clap = { version = "4.5.7", features = ["derive"] }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"]}
+crossbeam = "0.8.4"
+tempfile = "3.14.0"
+

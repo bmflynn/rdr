@@ -1,17 +1,12 @@
-use crate::{
-    rdr::{ApidInfo, PacketTracker, StaticHeader},
-    utils::{jpss_merge, now},
-};
 use anyhow::{bail, Context, Result};
 use ccsds::spacepacket::decode_packets;
 use hdf5::{File as H5File, Group};
-use hifitime::Epoch;
+use rdr::{jpss_merge, ApidInfo, PacketTracker, StaticHeader, Time};
 use std::{
     collections::HashMap,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 use tempfile::TempDir;
 use tracing::{debug, info, trace, warn};
@@ -23,11 +18,8 @@ enum DatasetType<'a> {
     Spacecraft(u16),
 }
 
-fn dataset_name(scid: u8, type_: &DatasetType, created: Epoch) -> String {
-    let dstr = hifitime::efmt::Formatter::new(
-        created,
-        hifitime::efmt::Format::from_str("%y%j%H%M%S").expect("invalid time format"),
-    );
+fn dataset_name(scid: u8, type_: &DatasetType, created: &Time) -> String {
+    let dstr = created.format("%y%j%H%M%S");
     match type_ {
         DatasetType::Science(path) => {
             if path.contains("VIIRS") {
@@ -113,7 +105,7 @@ fn dump_group(
     scid: u8,
     path: &str,
     group: &Group,
-    created: Epoch,
+    created: &Time,
 ) -> Result<Option<PathBuf>> {
     info!("dumping {path} to {workdir:?}");
     let files = dump_datasets_to(workdir, path, group)?;
@@ -146,7 +138,7 @@ fn get_spacecraft(path: &Path) -> u8 {
     }
 }
 
-pub fn split_spacecraft(fpath: &Path, scid: u8, created: Epoch) -> Result<Vec<PathBuf>> {
+pub fn split_spacecraft(fpath: &Path, scid: u8, created: &Time) -> Result<Vec<PathBuf>> {
     let mut files: HashMap<u16, File> = HashMap::default();
     let mut paths: Vec<PathBuf> = Vec::default();
 
@@ -179,7 +171,7 @@ pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
     }
     let scid = get_spacecraft(input);
     let workdir = TempDir::new()?;
-    let created = now();
+    let created = Time::now();
 
     let file = H5File::open(input).context("Opening input")?;
 
@@ -195,7 +187,7 @@ pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
     for group_path in groups {
         debug!("trying to dump {group_path}");
         if let Ok(group) = file.group(&group_path) {
-            let dat_path = dump_group(workdir.path(), scid, &group_path, &group, created)?;
+            let dat_path = dump_group(workdir.path(), scid, &group_path, &group, &created)?;
             if dat_path.is_none() {
                 warn!("no data found for {group_path}");
                 continue;
@@ -204,7 +196,7 @@ pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
 
             if spacecraft && group_path.contains("SPACECRAFT") {
                 debug!("splitting {dat_path:?} into separate spacecraft files");
-                let files = split_spacecraft(&dat_path, scid, created)
+                let files = split_spacecraft(&dat_path, scid, &created)
                     .context("splitting spacecraft files")?;
                 for fpath in files {
                     let dest = fpath.file_name().unwrap();

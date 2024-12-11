@@ -17,6 +17,8 @@ pub enum Error {
     Hdf5C(String),
     #[error(transparent)]
     Hdf5String(#[from] hdf5::types::StringError),
+    #[error("hdf5 error: {0}")]
+    Hdf5Other(&'static str),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
