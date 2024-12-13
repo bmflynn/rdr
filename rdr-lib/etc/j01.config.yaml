@@ -3,10 +3,10 @@ mode: dbc
 distributor: local
 
 satellite:
-  id: npp
-  short_name: NPP
+  id: j01
+  short_name: J01
   base_time: 1698019234000000
-  mission: S-NPP/JPSS
+  mission: NOAA 20/JPSS
 
 rdrs:
   - product: RVIRS
@@ -146,7 +146,7 @@ products:
     primary: false
     short_name: SPACECRAFT-DIARY-RDR
     type_id: DIARY
-    sensor: null
+    sensor: SPACECRAFT
     gran_len: 20000000
     apids:
       - { "num": 0, "name": "CRITICAL", "max_expected": 21 }

@@ -3,10 +3,10 @@ mode: dbc
 distributor: local
 
 satellite:
-  id: j03
-  short_name: JPSS-3
+  id: j02
+  short_name: J02
   base_time: 1698019234000000
-  mission: JPSS-3/JPSS
+  mission: NOAA 21/JPSS
 
 rdrs:
   - product: RVIRS
@@ -20,7 +20,7 @@ products:
     short_name: VIIRS-SCIENCE-RDR
     type_id: SCIENCE
     sensor: VIIRS
-    gran_len: 85000000
+    gran_len: 85350000
     apids:
       - { "num": 825, "name": "CAL", "max_expected": 1152 }
       - { "num": 821, "name": "DNB", "max_expected": 816 }
@@ -146,7 +146,7 @@ products:
     primary: false
     short_name: SPACECRAFT-DIARY-RDR
     type_id: DIARY
-    sensor: null
+    sensor: SPACECRAFT
     gran_len: 20000000
     apids:
       - { "num": 11, "name": "DIARY", "max_expected": 21 }

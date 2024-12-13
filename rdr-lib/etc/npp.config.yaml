@@ -6,7 +6,7 @@ satellite:
   id: npp
   short_name: NPP
   base_time: 1698019234000000
-  mission: Suomi NPP/JPSS
+  mission: S-NPP/JPSS
 
 rdrs:
   - product: RVIRS
@@ -144,6 +144,7 @@ products:
     short_name: SPACECRAFT-DIARY-RDR
     type_id: DIARY
     gran_len: 20000000
+    sensor: SPACECRAFT
     apids:
       - { "num": 0, "name": "CRITICAL", "max_expected": 21 }
       - { "num": 8, "name": "ADCS_HKH", "max_expected": 21 }
