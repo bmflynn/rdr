@@ -2,6 +2,7 @@ mod command_aggr;
 mod command_create;
 mod command_deaggr;
 mod command_dump;
+mod command_info;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -95,6 +96,14 @@ enum Commands {
         #[arg(value_name = "sat", value_parser=parse_valid_satellite)]
         satellite: String,
     },
+    Info {
+        #[arg(value_name = "path")]
+        input: PathBuf,
+        #[arg(short, long)]
+        short_name: Option<String>,
+        #[arg(short, long)]
+        granule_id: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +136,13 @@ fn main() -> Result<()> {
         }
         Commands::Deagg { .. } => {
             unimplemented!()
+        }
+        Commands::Info {
+            input,
+            short_name,
+            granule_id,
+        } => {
+            crate::command_info::info(input, short_name, granule_id)?;
         }
     }
 

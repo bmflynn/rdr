@@ -19,4 +19,5 @@ clap = { version = "4.5.7", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"]}
 crossbeam = "0.8.4"
 tempfile = "3.14.0"
+serde_json = "1.0.133"
 
