@@ -52,7 +52,7 @@ where
         s.spawn(move || {
             let created = Time::now();
             for rdrs in rx {
-                match write_hdf5(config, &rdrs, &created, dest).context("writing h5") {
+                match write_hdf5(config, &rdrs, &created, dest) {
                     Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0]),
                     Err(err) => {
                         error!("failed writing {}: {err}", &rdrs[0]);

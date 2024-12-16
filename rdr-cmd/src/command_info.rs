@@ -12,6 +12,7 @@ pub fn info<P: AsRef<Path>>(
 
     if let Some(short_name) = short_name {
         meta.products.retain(|s, _| *s == short_name);
+        meta.granules.retain(|s, _| *s == short_name);
     }
 
     if let Some(granule_id) = granule_id {

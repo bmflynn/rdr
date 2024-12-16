@@ -2,6 +2,7 @@ mod command_aggr;
 mod command_create;
 mod command_deaggr;
 mod command_dump;
+mod command_extract;
 mod command_info;
 
 use anyhow::Result;
@@ -96,7 +97,21 @@ enum Commands {
         #[arg(value_name = "sat", value_parser=parse_valid_satellite)]
         satellite: String,
     },
+    /// Generate JSON containing file and dataset attributes and values.
     Info {
+        #[arg(value_name = "path")]
+        input: PathBuf,
+        #[arg(short, long)]
+        short_name: Option<String>,
+        #[arg(short, long)]
+        granule_id: Option<String>,
+    },
+    /// Extracts Common RDR metadata and data structures.
+    ///
+    /// This will produce a JSON metadata file of the group and dataset attributes and a raw data
+    /// file for each of static_header, apid_list, packet_trackers, and ap_storage. The file name
+    /// format will be <short_name>_<granule_id>.()<name>.dat|json).
+    Extract {
         #[arg(value_name = "path")]
         input: PathBuf,
         #[arg(short, long)]
@@ -144,6 +159,11 @@ fn main() -> Result<()> {
         } => {
             crate::command_info::info(input, short_name, granule_id)?;
         }
+        Commands::Extract {
+            input,
+            short_name,
+            granule_id,
+        } => crate::command_extract::extract(input, short_name, granule_id)?,
     }
 
     Ok(())

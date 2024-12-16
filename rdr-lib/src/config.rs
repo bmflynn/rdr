@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 pub struct SatSpec {
     pub id: String,
     pub short_name: String,
+    /// Mission base time as UTC microseconds since Jan 1, 1970
     pub base_time: u64,
     pub mission: String,
 }

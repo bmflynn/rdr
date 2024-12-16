@@ -19,7 +19,7 @@ enum DatasetType<'a> {
 }
 
 fn dataset_name(scid: u8, type_: &DatasetType, created: &Time) -> String {
-    let dstr = created.format("%y%j%H%M%S");
+    let dstr = created.format_utc("%y%j%H%M%S");
     match type_ {
         DatasetType::Science(path) => {
             if path.contains("VIIRS") {
