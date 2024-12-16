@@ -2,10 +2,13 @@
 name = "rdr-cmd"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "Tool for manipulating JPSS RDR HDF5 files"
 authors.workspace = true
 repository.workspace = true
 license-file.workspace = true
+
+[build-dependencies]
+hdf5.workspace = true
 
 [dependencies]
 ccsds.workspace = true

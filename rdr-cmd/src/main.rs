@@ -11,15 +11,25 @@ use std::{
     io::{stderr, stdout, Write},
     path::PathBuf,
 };
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use rdr::config::get_default_content;
+
+fn version() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (hdf5:",
+        env!("H5_VERSION"),
+        ")"
+    )
+}
 
 /// Tool for manipulating JPSS RDR HDF5 files.
 ///
 /// Repository: <https://github.com/bmflynn/rdr>
 #[derive(Parser)]
-#[command(version, about, long_about, disable_help_subcommand = true)]
+#[command(version=version(), about, long_about, disable_help_subcommand = true)]
 struct Cli {
     /// Logging level filters, e.g., debug, info, warn, etc ...
     #[arg(short, long, default_value = "info")]
@@ -131,6 +141,8 @@ fn main() -> Result<()> {
         .without_time()
         .with_env_filter(EnvFilter::new(cli.logging))
         .init();
+
+    info!("hdf5 version={}", env!("H5_VERSION"));
 
     match cli.commands {
         Commands::Create {
