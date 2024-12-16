@@ -114,7 +114,7 @@ impl Collector {
                     );
                     Rdr::new(product, &self.sat, gran_time.clone())
                 });
-                rdr.add_packet(pkt_time, pkt);
+                rdr.add_packet(pkt_time, pkt).unwrap();
             }
 
             // Check to see if the second to last granule is complete. We can't check the
@@ -141,7 +141,7 @@ impl Collector {
                 );
                 Rdr::new(product, &self.sat, gran_time)
             });
-            rdr.add_packet(pkt_time, pkt);
+            rdr.add_packet(pkt_time, pkt).unwrap();
             None
         }
     }
