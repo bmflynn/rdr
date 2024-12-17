@@ -5,18 +5,17 @@ edition.workspace = true
 description.workspace = true
 authors.workspace = true
 repository.workspace = true
-license-file.workspace = true
+license.workspace = true
 
 [dependencies]
 hdf5.workspace = true
-hdf5-src.workspace = true
 hdf5-sys.workspace = true
 hifitime.workspace = true 
 ndarray.workspace = true
 ccsds.workspace = true
 tracing.workspace = true 
+tempfile.workspace = true
 
 thiserror = "2.0.6"
 serde = { version = "1.0", features = ["serde_derive"] }
 serde_yaml = "0.9"
-tempfile = "3.10.1"

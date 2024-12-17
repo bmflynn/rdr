@@ -186,7 +186,6 @@ impl CommonRdrCollector {
     ///
     /// # Panics
     /// If structure counts overflow rdr structure types
-    #[must_use]
     pub fn compile(&self) -> std::result::Result<Vec<u8>, RdrError> {
         let mut apids = self.apid_list.keys().collect::<Vec<_>>();
         apids.sort_unstable();

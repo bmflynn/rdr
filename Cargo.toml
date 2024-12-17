@@ -9,15 +9,15 @@ edition = "2021"
 description = "JPSS HDF5 Raw-Data-Record (RDR) Utilities"
 authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
 repository = "https://github.com/bmflynn/rdr"
-license-file = "LICENSE.txt"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 ccsds = { path = "../ccsds-rs/ccsds-lib" }
 hifitime = "4.0.1"
 hdf5 = { version = "0.8.1" }
-hdf5-src = { version = "0.8.1", features = ["threadsafe"] }
 hdf5-sys = { version = "0.8.1", features = ["static"] }
 # To match version used in hdf5 
 ndarray = "0.15.6"
+tempfile = "3.14.0"
 tracing = "0.1"
 spacecrafts = "0.1.0-beta.4"
