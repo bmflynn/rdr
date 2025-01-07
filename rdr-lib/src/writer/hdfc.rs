@@ -15,7 +15,6 @@ use hdf5_sys::{
 };
 use std::ffi::{c_char, c_void, CString};
 
-use crate::config::ProductSpec;
 use crate::error::H5Error;
 
 macro_rules! cstr {
@@ -53,9 +52,11 @@ macro_rules! chkerr {
 /// reference to the data in All_Data/<shortname>_All/RawApplicationPackets_<x>.
 ///
 /// This only creates the dataset, not any required attributes.
+///
+/// `src_path` is the H5 path to the source data for the reference in /All_Data
 pub(crate) fn create_dataproducts_gran_dataset(
     file: &File,
-    product: &ProductSpec,
+    short_name: &str,
     src_path: &str,
 ) -> std::result::Result<String, H5Error> {
     let (src_group_path, _) = src_path
@@ -108,7 +109,7 @@ pub(crate) fn create_dataproducts_gran_dataset(
         format!("creating reference to source dataset {src_dataset_name}")
     );
 
-    let dst_group_path = format!("/Data_Products/{0}", product.short_name,);
+    let dst_group_path = format!("/Data_Products/{0}", short_name);
     let dst_group_id =
         unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
     chkid!(
@@ -131,7 +132,7 @@ pub(crate) fn create_dataproducts_gran_dataset(
         .rsplit('_')
         .next()
         .expect("dataset name to end with _{idx}");
-    let dst_dataset_name = format!("{}_Gran_{sidx}", product.short_name,);
+    let dst_dataset_name = format!("{}_Gran_{sidx}", short_name);
     let dst_dataset_id = unsafe {
         H5Dcreate2(
             dst_group_id,
@@ -176,16 +177,16 @@ pub(crate) fn create_dataproducts_gran_dataset(
     Ok(format!("{dst_group_path}/{dst_dataset_name}"))
 }
 
-/// Create Data_Prodcuts/<shortname>/<shortname>_Aggr dataset that will contain an object
-/// reference to the group in All_Data/<shortname>_All.
+/// Create Data_Prodcuts/<shortname>/<shortname>_Aggr dataset containing an object reference
+/// to the group in All_Data/<shortname>_All.
 ///
 /// This only creates the dataset, not any required attributes.
 pub(crate) fn create_dataproducts_aggr_dataset(
     file: &File,
-    product: &ProductSpec,
+    short_name: &str,
 ) -> std::result::Result<String, H5Error> {
     // Create an object reference to the source group
-    let src_group_path = format!("All_Data/{0}_All", product.short_name);
+    let src_group_path = format!("All_Data/{0}_All", short_name);
     let mut ref_id: hobj_ref_t = 0;
     let errid = unsafe {
         H5Rcreate(
@@ -205,7 +206,7 @@ pub(crate) fn create_dataproducts_aggr_dataset(
 
     // Create the _Aggr dataset
     // Need the group id to create the dataset in
-    let dst_group_path = format!("/Data_Products/{0}", product.short_name,);
+    let dst_group_path = format!("/Data_Products/{0}", short_name);
     let dst_group_id =
         unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
     chkid!(
@@ -214,7 +215,7 @@ pub(crate) fn create_dataproducts_aggr_dataset(
         format!("opening dest group: {dst_group_path}")
     );
     // Now, create the dataset in that group
-    let dst_dataset_path = format!("/Data_Products/{0}/{0}_Aggr", product.short_name,);
+    let dst_dataset_path = format!("/Data_Products/{0}/{0}_Aggr", short_name);
     let dim = [1 as hsize_t];
     let dst_space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), std::ptr::null()) };
     chkid!(

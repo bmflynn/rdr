@@ -2,10 +2,10 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use hifitime::efmt::{Format, Formatter};
-use hifitime::Epoch;
-use serde::Serialize;
+use hifitime::{Epoch, TimeScale};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Time(Epoch);
 
 impl AsRef<Epoch> for Time {
@@ -23,20 +23,24 @@ impl Deref for Time {
 }
 
 impl Time {
-    // Difference betweeh hifitime epoch and JPSS epoch (Jan 1, 1958) in microseconds
+    // Difference betweeh hifitime epoch (1900-01-01) and JPSS epoch (Jan 1, 1958) in microseconds
     const IET_DELTA: u64 = 1_830_297_600_000_000;
 
     pub fn now() -> Self {
-        Time(Epoch::now().expect("failed to get system time"))
+        Time(
+            Epoch::now()
+                .expect("failed to get system time")
+                .to_time_scale(TimeScale::TAI),
+        )
     }
 
     pub fn from_epoch(epoch: Epoch) -> Self {
-        Time(epoch)
+        Time(epoch.to_time_scale(TimeScale::TAI))
     }
 
     /// Create [Time] from UTC microseconds since Jan 1, 1970.
     pub fn from_utc(micros: u64) -> Self {
-        Self(Epoch::from_unix_milliseconds((micros / 1_000) as f64))
+        Self(Epoch::from_unix_milliseconds((micros / 1_000) as f64).to_time_scale(TimeScale::TAI))
     }
 
     /// Create [Time] from IET microseconds.

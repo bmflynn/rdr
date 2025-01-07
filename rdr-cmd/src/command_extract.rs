@@ -1,15 +1,27 @@
 use anyhow::{Context, Result};
 use hdf5::types::FixedAscii;
-use rdr::{CommonRdr, StaticHeader};
+use rdr::CommonRdr;
 use std::fs::{write, File};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
-pub fn extract<P: AsRef<Path>>(
-    input: P,
+pub struct ExtractedOutput {
+    pub path: PathBuf,
+    pub granule_id: String,
+    pub short_name: String,
+}
+
+pub fn extract<I: AsRef<Path>, O: AsRef<Path>>(
+    input: I,
+    outdir: O,
     short_name: Option<String>,
     granule_id: Option<String>,
-) -> Result<()> {
+) -> Result<Vec<ExtractedOutput>> {
+    let mut outputs = Vec::default();
+
+    let outdir = outdir.as_ref();
+    std::fs::create_dir_all(outdir).with_context(|| format!("creating direcotry {outdir:?}"))?;
+
     let file = hdf5::File::open(&input)
         .with_context(|| format!("failed to open {:?}", input.as_ref().to_path_buf()))?;
 
@@ -46,34 +58,23 @@ pub fn extract<P: AsRef<Path>>(
             let data = arr.as_slice().unwrap();
 
             let common_rdr = CommonRdr::from_bytes(data)?;
-            let fname = format!("{short_name}_{id}.json");
-            let file = File::create(&fname).with_context(|| format!("creating {fname}"))?;
+            let fpfx = format!("{short_name}_{id}");
+            let fpath = outdir.join(format!("{fpfx}.json"));
+            let file = File::create(&fpath).with_context(|| format!("creating {fpath:?}"))?;
             serde_json::to_writer_pretty(&file, &common_rdr)?;
 
-            write(
-                format!("{short_name}_{id}.static_header.dat"),
-                &data[..StaticHeader::LEN],
-            )?;
+            let fpath = outdir.join(format!("{fpfx}.dat"));
+            write(&fpath, data).with_context(|| format!("writing {fpath:?}"))?;
 
-            let header = common_rdr.static_header;
-            write(
-                format!("{short_name}_{id}.apid_list.dat"),
-                &data[header.apid_list_offset as usize..header.pkt_tracker_offset as usize],
-            )?;
-
-            write(
-                format!("{short_name}_{id}.packet_trackers.dat"),
-                &data[header.pkt_tracker_offset as usize..header.ap_storage_offset as usize],
-            )?;
-
-            write(
-                format!("{short_name}_{id}.ap_storage.dat"),
-                &data[header.ap_storage_offset as usize..header.next_pkt_position as usize],
-            )?;
+            outputs.push(ExtractedOutput {
+                path: fpath,
+                granule_id: id,
+                short_name,
+            });
         }
     }
 
-    Ok(())
+    Ok(outputs)
 }
 
 fn get_granule_id(file: &hdf5::File, dataset_path: &str) -> Result<String> {

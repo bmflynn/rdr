@@ -15,6 +15,7 @@ ccsds.workspace = true
 tracing.workspace = true
 hifitime.workspace = true
 hdf5.workspace = true
+ndarray.workspace = true
 tempfile.workspace = true
 
 anyhow = "1.0"

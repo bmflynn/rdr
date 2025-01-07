@@ -89,10 +89,13 @@ enum Commands {
     },
     /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
     #[command(hide = true)]
-    Agg {
+    Aggr {
         /// One or more RDR file to include in the output
-        #[arg(value_name = "path")]
-        input: Vec<PathBuf>,
+        #[arg(value_name = "paths")]
+        inputs: Vec<PathBuf>,
+        /// Directory for temporary artifacts
+        #[arg(short, long, default_value = ".")]
+        workdir: Option<PathBuf>,
     },
     /// Deaggregate an aggregated RDR.
     #[command(hide = true)]
@@ -119,8 +122,7 @@ enum Commands {
     /// Extracts Common RDR metadata and data structures.
     ///
     /// This will produce a JSON metadata file of the group and dataset attributes and a raw data
-    /// file for each of static_header, apid_list, packet_trackers, and ap_storage. The file name
-    /// format will be <short_name>_<granule_id>.()<name>.dat|json).
+    /// file RDR granule datasets in the file.
     Extract {
         #[arg(value_name = "path")]
         input: PathBuf,
@@ -128,6 +130,9 @@ enum Commands {
         short_name: Option<String>,
         #[arg(short, long)]
         granule_id: Option<String>,
+        /// Directory for extracted artifacts
+        #[arg(short, long)]
+        outdir: Option<PathBuf>,
     },
 }
 
@@ -158,8 +163,9 @@ fn main() -> Result<()> {
         Commands::Config { satellite } => {
             stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;
         }
-        Commands::Agg { .. } => {
-            unimplemented!()
+        Commands::Aggr { inputs, workdir } => {
+            let workdir = workdir.unwrap_or(std::env::current_dir()?);
+            crate::command_aggr::aggreggate(&inputs, workdir)?;
         }
         Commands::Deagg { .. } => {
             unimplemented!()
@@ -175,7 +181,11 @@ fn main() -> Result<()> {
             input,
             short_name,
             granule_id,
-        } => crate::command_extract::extract(input, short_name, granule_id)?,
+            outdir,
+        } => {
+            let outdir = outdir.unwrap_or(std::env::current_dir()?);
+            crate::command_extract::extract(input, outdir, short_name, granule_id)?;
+        }
     }
 
     Ok(())

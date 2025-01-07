@@ -7,6 +7,8 @@ use ccsds::spacepacket::PrimaryHeader;
 pub enum RdrError {
     #[error("Invalid IET microseconds time value {0}")]
     InvalidTime(u64),
+    #[error("Granule start is less than spacecraft base time: {0}")]
+    InvalidGranuleStart(u64),
     #[error("Invalid packet header {0:?}")]
     InvalidPktHeader(PrimaryHeader),
     #[error("Invalid packet apid for RDR product {0} {1}")]

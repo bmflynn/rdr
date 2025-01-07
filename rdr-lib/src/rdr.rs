@@ -2,7 +2,7 @@ use ccsds::spacepacket::{Apid, Packet};
 use hdf5::{types::FixedAscii, Dataset, Group};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     path::Path,
 };
@@ -68,39 +68,37 @@ pub fn get_granule_start(iet: u64, gran_len: u64, base_time: u64) -> u64 {
 }
 
 /// Compuate the value used for N_Granule_ID
-fn granule_id(sat_short_name: &str, base_time: u64, rdr_iet: u64) -> String {
+///
+/// # Errors
+/// If `rdr_iet` is less than the configured satellite base time
+pub fn granule_id(sat_short_name: &str, base_time: u64, rdr_iet: u64) -> Result<String> {
+    if rdr_iet < base_time {
+        return Err(Error::RdrError(RdrError::InvalidGranuleStart(rdr_iet)));
+    }
     let t = (rdr_iet - base_time) / 100_000;
-    format!("{}{:012}", sat_short_name.to_uppercase(), t)
+    Ok(format!("{}{:012}", sat_short_name.to_uppercase(), t))
 }
 
-/// Common RDR data structures and metadata for a single RDR.
-#[derive(Clone)]
+/// Data structure for collection neccessary metadata and data necessary to write a single
+/// [CommonRdr] to an RDR file.
+#[derive(Clone, Debug)]
 pub struct Rdr {
-    pub id: String,
-    /// The short product id for this rdr, e.g., RVIRS
+    /// Product id is not part of standard RDR granule metadata but is required to construct the
+    /// filename.
     pub product_id: String,
-    /// Any other products that are packed with this rdr, .e.g., RNSCA
-    pub packed_with: Vec<String>,
-    /// [Time] for this granule
-    pub time: Time,
-    pub gran_len: u64,
-    /// Time this RDR was created
-    pub created: Time,
-
+    /// Standard RDR granule metadata.
+    pub meta: GranuleMeta,
+    /// RDR data bits
     pub data: CommonRdrCollector,
 }
 
 impl Rdr {
-    pub fn new(product: &ProductSpec, sat: &SatSpec, time: Time) -> Self {
-        Rdr {
-            id: granule_id(&sat.short_name, sat.base_time, time.iet()),
+    pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Result<Self> {
+        Ok(Self {
             product_id: product.product_id.to_string(),
-            packed_with: vec!["RNSCA".to_string()],
-            gran_len: product.gran_len,
-            time: time.clone(),
-            created: Time::now(),
-            data: CommonRdrCollector::new(product.clone(), sat, time),
-        }
+            meta: GranuleMeta::new(time.clone(), sat, product)?,
+            data: CommonRdrCollector::new(product.clone(), sat, time.clone()),
+        })
     }
 
     /// Add a packet and update the Common RDR structures and offsets.
@@ -251,8 +249,8 @@ impl Display for Rdr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Rdr{{product={} granule={:?}}}",
-            self.product_id, self.time,
+            "Rdr{{product={} time={}T{}}}",
+            self.meta.collection, self.meta.begin_date, self.meta.begin_time,
         )
     }
 }
@@ -272,6 +270,104 @@ macro_rules! attr_u64 {
             .read_2d::<u64>()
             .map_err(|e| H5Error::Sys(format!("reading u64 attr {}: {}", $name, e)))?[[0, 0]]
     };
+}
+
+/// Create an IDPS style RDR filename
+pub fn filename(satid: &str, origin: &str, mode: &str, created: &Time, rdrs: &[Rdr]) -> String {
+    let mut product_ids: HashSet<String> = HashSet::default();
+    let mut start = Time::now().iet();
+    let mut end = 0;
+    for rdr in rdrs {
+        // Only science types determine file time. There should only be one science type but we
+        // leave that to the caller and just compute times based on all science types.
+        if rdr.meta.collection.contains("SCIENCE") {
+            start = std::cmp::min(start, rdr.meta.begin_time_iet);
+            end = std::cmp::max(end, rdr.meta.end_time_iet);
+        }
+        product_ids.insert(rdr.product_id.to_string());
+    }
+    let mut product_ids: Vec<String> = Vec::from_iter(product_ids);
+    product_ids.sort();
+
+    let start = Time::from_iet(start);
+    let end = Time::from_iet(end);
+    format!(
+        // FIXME: hard-coded orbit number
+        "{}_{}_d{}_t{}_e{}_b00000_c{}_{}u_{}.h5",
+        product_ids.join("-"),
+        satid,
+        start.format_utc("%Y%m%d"),
+        &start.format_utc("%H%M%S%f")[..7],
+        &end.format_utc("%H%M%S%f")[..7],
+        &created.format_utc("%Y%m%d%H%M%S%f")[..20],
+        &origin[..3],
+        mode,
+    )
+}
+
+pub fn attr_date(dt: &Time) -> String {
+    dt.format_utc("%Y%m%d")
+}
+
+pub fn attr_time(dt: &Time) -> String {
+    // Avoid floating point rouding issues by just rendering micros directly
+    format!("{}.{}Z", dt.format_utc("%H%M%S"), dt.iet() % 1_000_000)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AggrMeta {
+    pub begin_orbit_nubmer: u32,
+    pub end_orbit_number: u32,
+    pub num_granules: u32,
+    pub begin_date: String,
+    pub begin_time: String,
+    pub begin_granule_id: String,
+    pub end_date: String,
+    pub end_time: String,
+    pub end_granule_id: String,
+}
+
+impl AggrMeta {
+    pub fn from_rdrs(rdrs: &Vec<Rdr>) -> Self {
+        let mut start_rdr: Option<Rdr> = None;
+        let mut end_rdr: Option<Rdr> = None;
+        let mut count: u32 = 0;
+        for rdr in rdrs {
+            if start_rdr.is_none() {
+                start_rdr = Some(rdr.clone());
+            }
+            if end_rdr.is_none() {
+                end_rdr = Some(rdr.clone());
+            }
+            start_rdr = Some(
+                std::cmp::min_by(&start_rdr.unwrap(), rdr, |a, b| {
+                    a.meta.begin_time_iet.cmp(&b.meta.begin_time_iet)
+                })
+                .clone(),
+            );
+            end_rdr = Some(
+                std::cmp::max_by(&end_rdr.unwrap(), rdr, |a, b| {
+                    a.meta.end_time_iet.cmp(&b.meta.end_time_iet)
+                })
+                .clone(),
+            );
+            count += 1;
+        }
+
+        let start_rdr = start_rdr.unwrap();
+        let end_rdr = end_rdr.unwrap();
+        Self {
+            begin_orbit_nubmer: 1,
+            end_orbit_number: 1,
+            num_granules: count,
+            begin_date: start_rdr.meta.begin_date,
+            begin_time: start_rdr.meta.begin_time,
+            begin_granule_id: start_rdr.meta.id.to_string(),
+            end_date: end_rdr.meta.end_date,
+            end_time: end_rdr.meta.end_time,
+            end_granule_id: end_rdr.meta.id.to_string(),
+        }
+    }
 }
 
 /// Metadata associated with a particular granule dataset from RDR path
@@ -303,6 +399,44 @@ pub struct GranuleMeta {
 }
 
 impl GranuleMeta {
+    const DEFAULT_VERSION: &str = "A1";
+    const DEFAULT_STATUS: &str = "N/A";
+    const DEFAULT_LEOA_FLAG: &str = "Off";
+    const DEFAULT_MODE: &str = "dev";
+
+    pub fn new(time: Time, sat: &SatSpec, product: &ProductSpec) -> Result<Self> {
+        let created = Time::now();
+        let start = &time;
+        let end = &Time::from_iet(start.iet() + product.gran_len);
+        let id = granule_id(&sat.short_name, sat.base_time, start.iet())?;
+
+        Ok(Self {
+            instrument: product.sensor.to_string(),
+            collection: product.short_name.to_string(),
+            begin_date: attr_date(start),
+            begin_time: attr_time(start),
+            begin_time_iet: start.iet(),
+            end_date: attr_date(end),
+            end_time: attr_time(end),
+            end_time_iet: start.iet(),
+            creation_date: attr_date(&created),
+            creation_time: attr_time(&created),
+            orbit_number: 1,
+            id: id.to_string(),
+            status: Self::DEFAULT_STATUS.to_string(),
+            version: Self::DEFAULT_VERSION.to_string(),
+            idps_mode: Self::DEFAULT_MODE.to_string(),
+            jpss_doc: "".to_string(),
+            leoa_flag: Self::DEFAULT_LEOA_FLAG.to_string(),
+            packet_type: Vec::default(),
+            packet_type_count: Vec::default(),
+            percent_missing: 0.0,
+            reference_id: format!("{}:{}:{}", product.short_name, id, Self::DEFAULT_VERSION),
+            software_version: concat!("rdr", env!("CARGO_PKG_VERSION")).to_string(),
+        })
+    }
+
+    /// Read RDR grnaule metadata from a [Dataset].
     fn from_dataset(
         instrument: &str,
         collection: &str,
@@ -363,14 +497,37 @@ pub struct ProductMeta {
     pub instrument: String,
     pub collection: String,
     pub processing_domain: String,
+    pub dataset_type: String,
 }
 
 impl ProductMeta {
+    const DEFAULT_TYPE_TAG: &str = "RDR";
+    const DEFAULT_PROC_DOMAIN: &str = "dev";
+
+    pub fn from_rdr(rdr: &Rdr) -> Self {
+        Self {
+            instrument: rdr.meta.instrument.to_string(),
+            collection: rdr.meta.collection.to_string(),
+            processing_domain: Self::DEFAULT_PROC_DOMAIN.to_string(),
+            dataset_type: Self::DEFAULT_TYPE_TAG.to_string(),
+        }
+    }
+
+    fn from_product(product: &ProductSpec) -> Self {
+        Self {
+            instrument: product.sensor.to_string(),
+            collection: product.short_name.to_string(),
+            processing_domain: Self::DEFAULT_PROC_DOMAIN.to_string(),
+            dataset_type: Self::DEFAULT_TYPE_TAG.to_string(),
+        }
+    }
+
     fn from_group(grp: &Group) -> std::result::Result<Self, H5Error> {
         Ok(Self {
             instrument: attr_string!(&grp, "Instrument_Short_Name"),
             collection: attr_string!(&grp, "N_Collection_Short_Name"),
             processing_domain: attr_string!(&grp, "N_Processing_Domain"),
+            dataset_type: attr_string!(&grp, "N_Dataset_Type_Tag"),
         })
     }
 }
@@ -453,16 +610,7 @@ impl Meta {
             platform: config.satellite.short_name.clone(),
             products: products
                 .iter()
-                .map(|p| {
-                    (
-                        p.short_name.clone(),
-                        ProductMeta {
-                            instrument: p.sensor.clone(),
-                            collection: p.short_name.clone(),
-                            processing_domain: "ops".to_string(),
-                        },
-                    )
-                })
+                .map(|p| (p.short_name.clone(), ProductMeta::from_product(p)))
                 .collect(),
             granules: products
                 .iter()
@@ -741,7 +889,7 @@ mod tests {
     #[test]
     fn test_granule_id() {
         let rdr_iet = 2112504394000000;
-        let zult = granule_id("NPP", BASE_TIME, rdr_iet);
+        let zult = granule_id("NPP", BASE_TIME, rdr_iet).unwrap();
         assert_eq!(zult, "NPP004144851600");
     }
 
@@ -822,5 +970,76 @@ mod tests {
         let dat = tracker.as_bytes();
         let zult = PacketTracker::from_bytes(&dat).unwrap();
         assert_eq!(tracker, zult);
+    }
+
+    mod filename {
+        use hifitime::Epoch;
+        use std::str::FromStr;
+
+        use crate::{config::get_default, rdr::Rdr};
+
+        use super::*;
+
+        #[test]
+        fn packed_rdrs() {
+            let config = get_default("npp").unwrap().unwrap();
+            let primary = config
+                .products
+                .iter()
+                .filter(|p| p.product_id == "RVIRS")
+                .collect::<Vec<_>>()[0];
+            let packed = config
+                .products
+                .iter()
+                .filter(|p| p.product_id == "RNSCA")
+                .collect::<Vec<_>>()[0];
+
+            let time = Time::from_epoch(Epoch::from_str("2020-01-01T12:13:14.123456Z").unwrap());
+            eprintln!("scale:{:?} time:{time:?}", time.time_scale);
+            let fname = filename(
+                "npp",
+                "origin",
+                "ops",
+                &Time::now(), // created
+                &[
+                    Rdr::new(&config.satellite, primary, &time).unwrap(),
+                    Rdr::new(&config.satellite, packed, &time).unwrap(),
+                ],
+            );
+
+            let (prefix, _) = fname.split_once('_').unwrap();
+            assert_eq!(prefix, "RNSCA-RVIRS");
+
+            assert!(
+                fname.contains("d20200101_t1213141_e"),
+                "Filename does not contain date string"
+            );
+        }
+
+        #[test]
+        fn no_packed_rdrs() {
+            let config = get_default("npp").unwrap().unwrap();
+            let primary = config
+                .products
+                .iter()
+                .filter(|p| p.product_id == "RVIRS")
+                .collect::<Vec<_>>()[0];
+
+            let time = Time::from_epoch(Epoch::from_str("2020-01-01T12:13:14.123456Z").unwrap());
+            let fname = filename(
+                "npp",
+                "origin",
+                "ops",
+                &Time::now(), // created
+                &[Rdr::new(&config.satellite, primary, &time).unwrap()],
+            );
+
+            let (prefix, _) = fname.split_once('_').unwrap();
+            assert_eq!(prefix, "RVIRS");
+            assert!(
+                fname.contains("d20200101_t1213141_e"),
+                "Filename does not contain date string"
+            );
+        }
     }
 }

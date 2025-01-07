@@ -7,10 +7,29 @@ use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SatSpec {
+    /// Satellite id, e.g., npp, j01, etc ...
     pub id: String,
+    /// Collection short name, e.g., VIIRS-SCIENCE-RDR. Sometimes referred to as just collection.
+    ///
+    /// See CDFCB-X, Appendix A
     pub short_name: String,
-    /// Mission base time as UTC microseconds since Jan 1, 1970
+    /// Mission base time as IET microseconds.
+    ///
+    /// This is described in the CDFCB as "Time of first ascending node after launch", however, it
+    /// has the same value for for all JPSS spacecraft.
+    ///
+    /// From CDFCB-X, Table 3.5.12.-1
+    /// |Spacecraft|Basetime        |
+    /// |----------|----------------|
+    /// |SNPP      |1698019234000000|
+    /// |JPSS-1    |1698019234000000|
+    /// |JPSS-2    |1698019234000000|
+    /// |JPSS-3    |1698019234000000|
+    /// |JPSS-4    |1698019234000000|
+    /// |GCOM-W1   |1715904034000000|
+    /// |GOSAT-GW  |1767225635000000|
     pub base_time: u64,
+    /// Mission, e.g., S-NPP/JPSS
     pub mission: String,
 }
 
@@ -23,10 +42,15 @@ pub struct ApidSpec {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProductSpec {
+    /// The product identifier, e.g., RVIRS, RNSCA, etc...
+    ///
+    /// See CDFCB-X, Appendix A.
     pub product_id: String,
     #[serde(default)]
     pub sensor: String,
+    /// See [SatSpec::short_name]
     pub short_name: String,
+    /// Data type, e.g., SCIENCE, DIARY, etc ...
     pub type_id: String,
     pub gran_len: u64,
     pub apids: Vec<ApidSpec>,
@@ -47,6 +71,9 @@ impl ProductSpec {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RdrSpec {
+    /// Data product id.
+    ///
+    /// See CDFCB-X Vol 1, Appendix A.
     pub product: String,
     #[serde(default)]
     pub packed_with: Vec<String>,

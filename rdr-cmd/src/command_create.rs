@@ -3,7 +3,7 @@ use ccsds::spacepacket::{collect_groups, decode_packets, PacketGroup};
 use crossbeam::channel;
 use rdr::{
     config::{get_default, Config},
-    jpss_merge, write_hdf5, Collector, PacketTimeIter, Time,
+    jpss_merge, Collector, Meta, PacketTimeIter, Time,
 };
 use std::{
     fs::{create_dir, File},
@@ -12,7 +12,7 @@ use std::{
     thread,
 };
 use tempfile::TempDir;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Option<Config>> {
     match satellite {
@@ -37,7 +37,13 @@ where
     thread::scope(|s| {
         s.spawn(move || {
             for (pkt, pkt_time) in PacketTimeIter::new(packet_groups) {
-                let complete = collector.add(&pkt_time, pkt);
+                let complete = match collector.add(&pkt_time, pkt) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        warn!("failed to add packet: {e}");
+                        continue;
+                    }
+                };
                 if let Some(rdrs) = complete {
                     debug!("collected {}", &rdrs[0]);
                     let _ = tx.send(rdrs);
@@ -52,12 +58,26 @@ where
         s.spawn(move || {
             let created = Time::now();
             for rdrs in rx {
-                match write_hdf5(config, &rdrs, &created, dest) {
-                    Ok(fpath) => info!("wrote {} to {fpath:?}", &rdrs[0]),
-                    Err(err) => {
-                        error!("failed writing {}: {err}", &rdrs[0]);
-                    }
+                let fpath = dest.join(rdr::filename(
+                    &config.satellite.id,
+                    &config.origin,
+                    &config.mode,
+                    &created,
+                    &rdrs,
+                ));
+                let short_names: Vec<String> =
+                    rdrs.iter().map(|r| r.meta.collection.to_string()).collect();
+                let Some(meta) = Meta::from_products(&short_names, config) else {
+                    warn!(
+                        "RDR generated with one or more unknown product ids: {:?}",
+                        short_names
+                    );
+                    continue;
                 };
+                match rdr::create_rdr(&fpath, meta, &rdrs) {
+                    Ok(_) => info!("wrote {} to {fpath:?}", &rdrs[0]),
+                    Err(err) => error!("failed to write {fpath:?}: {err}"),
+                }
             }
         });
     });

@@ -1,5 +1,5 @@
-origin: loc
-mode: dbc
+origin: dev
+mode: dev
 distributor: local
 
 satellite:
