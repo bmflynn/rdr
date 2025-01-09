@@ -88,7 +88,6 @@ enum Commands {
         input: PathBuf,
     },
     /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
-    #[command(hide = true)]
     Aggr {
         /// One or more RDR file to include in the output
         #[arg(value_name = "paths")]

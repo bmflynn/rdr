@@ -49,7 +49,7 @@ where
                     let _ = tx.send(rdrs);
                 }
             }
-            for rdrs in collector.finish() {
+            for rdrs in collector.finish().expect("finishing collection") {
                 debug!("collected {}", &rdrs[0]);
                 let _ = tx.send(rdrs);
             }

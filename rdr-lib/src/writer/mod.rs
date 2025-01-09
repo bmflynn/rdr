@@ -102,7 +102,7 @@ pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr
     Ok(())
 }
 
-fn write_rdr_granule(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<()> {
+pub fn write_rdr_granule(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<()> {
     let rawdata_path = write_rdr_to_alldata(file, gran_idx, rdr)?;
     let product_meta = ProductMeta::from_rdr(rdr);
     write_dataproduct_group(file, &product_meta)?;
@@ -129,7 +129,7 @@ fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<Strin
     );
     try_h5!(
         file.new_dataset_builder()
-            .with_data(&arr1(&rdr.as_bytes()?[..]))
+            .with_data(&arr1(&rdr.data))
             .create(name.clone().as_str()),
         format!("creating dataset {name}")
     )?;

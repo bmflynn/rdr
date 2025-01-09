@@ -1,30 +1,22 @@
 use anyhow::{Context, Result};
 use hdf5::File;
-use ndarray::arr1;
 use rdr::{
-    config::{get_default, Config},
-    GranuleMeta, Meta, Rdr, Time,
+    config::{get_default, Config, ProductSpec, SatSpec},
+    write_rdr_granule, GranuleMeta, Meta, Rdr,
 };
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::OnceLock,
 };
 use tracing::{error, info, info_span, warn};
 
 use crate::command_extract::extract;
 
 struct Item {
-    meta: GranuleMeta,
     path: PathBuf,
-    short_name: String,
-    product_id: String,
-}
-
-fn get_sat(name: &str) -> Result<&str> {
-    name.split("_")
-        .nth(1)
-        .with_context(|| format!("failed to determine satellite from {name}"))
+    product: ProductSpec,
+    sat: SatSpec,
+    meta: GranuleMeta,
 }
 
 fn get_config(satid: &str) -> Result<Config> {
@@ -35,13 +27,14 @@ fn get_config(satid: &str) -> Result<Config> {
 
 pub fn create_file() -> Result<File> {
     let file = File::create("output.h5")?;
-    file.group("/All_Data")?;
-    file.group("/Data_Products")?;
+    file.create_group("/All_Data")?;
+    file.create_group("/Data_Products")?;
     Ok(file)
 }
 
 pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<PathBuf> {
     let workdir = workdir.as_ref().to_path_buf();
+    // short_name to RDRs
     let mut outputs: HashMap<String, Vec<Item>> = Default::default();
     let mut granule_count: usize = 0;
 
@@ -62,12 +55,9 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
             }
         };
 
-        // Initialize global OnceLocks. First file sets both config and what will become the global
-        // file metadata.
         let input_meta = Meta::from_file(input)?;
-
-        let config =
-            get_config(&input_meta.platform.to_lowercase()).expect("no config for platform");
+        let config = get_config(&input_meta.platform.to_lowercase())
+            .with_context(|| format!("Failed to lookup spacecraft config for {input:?}"))?;
         for output in &extracted_outputs {
             granule_count += 1;
             info!("extracted {}/{}", output.short_name, output.granule_id);
@@ -79,7 +69,7 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 warn!("no product for short_name {}; skipping", output.short_name);
                 continue;
             };
-            let Some(granule) = input_meta
+            let Some(meta) = input_meta
                 .granules
                 .get(&product.short_name.clone())
                 .unwrap()
@@ -96,33 +86,28 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 .entry(output.short_name.clone())
                 .or_default()
                 .push(Item {
-                    meta: granule.clone(),
                     path: output.path.clone(),
-                    short_name: output.short_name.clone(),
-                    product_id: product.product_id.clone(),
+                    meta: meta.clone(),
+                    sat: config.satellite.clone(),
+                    product: product.clone(),
                 });
         }
     }
-
     info!(
         "extracted {} extracted granules from {} files",
         granule_count,
         inputs.len()
     );
 
+    // All RDRs have been extracted, now shove them into the new file.
     let file = create_file()?;
     for (short_name, granules) in outputs.iter() {
-        for (idx, granule) in granules.iter().enumerate() {
-            let group_name = format!("/All_Data/{short_name}");
-            if let Err(err) = file.group(&group_name) {
-                error!("failed to open {group_name}; skipping: {err}");
-                continue;
-            }
-            let data = std::fs::read(&granule.path)?;
-            let name = format!("/All_Data/{short_name}/RawApplicationPackets_{idx}");
-            file.new_dataset_builder()
-                .with_data(&arr1(&data[..]))
-                .create(name.clone().as_str())?;
+        for (gran_idx, item) in granules.iter().enumerate() {
+            let data = std::fs::read(&item.path)?;
+            let rdr = Rdr::from_data(&item.sat, &item.product, &item.meta.begin, data)
+                .with_context(|| format!("creating RDR {short_name} granule {gran_idx}"))?;
+            write_rdr_granule(&file, gran_idx, &rdr)
+                .with_context(|| format!("writing RDR {short_name} granule {gran_idx}"))?;
         }
     }
 

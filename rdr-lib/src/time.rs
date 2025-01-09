@@ -71,6 +71,8 @@ impl Time {
 
 #[cfg(test)]
 mod test {
+    use hifitime::Unit;
+
     use super::*;
 
     #[test]
@@ -101,5 +103,23 @@ mod test {
     fn test_from_iet() {
         let iet: u64 = 2112504609700000;
         assert_eq!(Time::from_iet(iet).iet(), iet);
+    }
+
+    #[test]
+    fn test_hifitime() {
+        let epoch = Epoch::from_str("1970-01-01T00:00:00Z").unwrap();
+        eprintln!(
+            "time:{epoch:?} scale:{} tai:{} utc:{}",
+            epoch.time_scale,
+            epoch.to_tai(Unit::Millisecond),
+            epoch.to_unix_milliseconds(),
+        );
+        let epoch = Epoch::from_tai_seconds(0.0);
+        eprintln!(
+            "time:{epoch:?} scale:{} tai:{} utc:{}",
+            epoch.time_scale,
+            epoch.to_tai(Unit::Millisecond),
+            epoch.to_unix_milliseconds(),
+        );
     }
 }

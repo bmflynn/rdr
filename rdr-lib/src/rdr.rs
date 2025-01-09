@@ -83,70 +83,60 @@ pub fn granule_id(sat_short_name: &str, base_time: u64, rdr_iet: u64) -> Result<
 /// [CommonRdr] to an RDR file.
 #[derive(Clone, Debug)]
 pub struct Rdr {
-    /// Product id is not part of standard RDR granule metadata but is required to construct the
-    /// filename.
-    pub product_id: String,
     /// Standard RDR granule metadata.
     pub meta: GranuleMeta,
-    /// RDR data bits
-    pub data: CommonRdrCollector,
+    pub product_id: String,
+    /// The bytes making up the raw common RDR. See [RdrData].
+    pub data: Vec<u8>,
 }
 
 impl Rdr {
-    pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Result<Self> {
-        Ok(Self {
-            product_id: product.product_id.to_string(),
-            meta: GranuleMeta::new(time.clone(), sat, product)?,
-            data: CommonRdrCollector::new(product.clone(), sat, time.clone()),
-        })
-    }
-
-    /// Add a packet and update the Common RDR structures and offsets.
-    ///
-    /// Any pakcet with an APID not yet seen will result in a new [ApidInfo] being added.
-    ///
-    /// Packets are added to the AP storage in the order in which they are added.
+    /// Create a new empty RDR.
     ///
     /// # Errors
-    /// If adding a packet results in invalid values for the Common Rdr structure types.
-    pub fn add_packet(&mut self, pkt_time: &Time, pkt: Packet) -> Result<()> {
-        self.data.add_packet(pkt_time, pkt)
+    /// If the time is not valid for the given specs
+    pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Result<Self> {
+        Self::from_data(sat, product, time, vec![])
     }
 
-    /// Generate bytes for the current state.
-    ///
-    /// This can be called muiltiple
-    pub fn as_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.data.compile()?)
+    pub fn from_data(
+        sat: &SatSpec,
+        product: &ProductSpec,
+        time: &Time,
+        data: Vec<u8>,
+    ) -> Result<Self> {
+        Ok(Self {
+            meta: GranuleMeta::new(time.clone(), sat, product)?,
+            product_id: product.product_id.to_string(),
+            data,
+        })
     }
 }
 
+/// Collects metadata and packets into a common RDR structures.
 #[derive(Debug, Clone)]
-pub struct CommonRdrCollector {
-    pub product: ProductSpec,
-    pub header: StaticHeader,
-    /// Common RDR ``ApidLists`` for each apid
-    pub apid_list: HashMap<Apid, ApidInfo>,
-    /// Packet trackers per-apid
-    pub trackers: HashMap<Apid, Vec<PacketTracker>>,
-    /// Common RDR packet storage area (IET micros, packet).
-    pub ap_storage: VecDeque<(u64, Packet)>,
-    pub ap_storage_offset: i32,
+pub struct RdrData {
+    short_name: String,
+    header: StaticHeader,
+    apid_list: HashMap<Apid, ApidInfo>,
+    trackers: HashMap<Apid, Vec<PacketTracker>>,
+    ap_storage: VecDeque<(u64, Packet)>,
+    ap_storage_offset: i32,
 }
 
-impl CommonRdrCollector {
-    pub fn new(product: ProductSpec, sat: &SatSpec, time: Time) -> Self {
-        CommonRdrCollector {
-            header: StaticHeader::new(&time, sat, &product),
+impl RdrData {
+    pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Self {
+        Self {
+            short_name: product.short_name.to_string(),
             apid_list: product
                 .apids
                 .iter()
                 .map(|a| (a.num, ApidInfo::new(&a.name, a.num)))
                 .collect(),
+            header: StaticHeader::new(time, sat.short_name.to_string(), product),
             trackers: HashMap::default(),
             ap_storage: VecDeque::default(),
             ap_storage_offset: 0,
-            product: product.clone(),
         }
     }
 
@@ -155,7 +145,7 @@ impl CommonRdrCollector {
             .apid_list
             .get_mut(&pkt.header.apid)
             .ok_or(RdrError::InvalidPktApid(
-                self.product.short_name.to_string(),
+                self.short_name.to_string(),
                 pkt.header.apid,
             ))?;
         info.pkts_reserved += 1;
@@ -180,11 +170,11 @@ impl CommonRdrCollector {
         Ok(())
     }
 
-    /// Compile this RDR into its byte representation.
+    /// Create an [Rdr] from the current builder state.
     ///
     /// # Panics
     /// If structure counts overflow rdr structure types
-    pub fn compile(&self) -> std::result::Result<Vec<u8>, RdrError> {
+    pub fn compile(&self) -> Result<Vec<u8>> {
         let mut apids = self.apid_list.keys().collect::<Vec<_>>();
         apids.sort_unstable();
         let mut apid_list = self.apid_list.clone();
@@ -201,8 +191,8 @@ impl CommonRdrCollector {
 
         // Fill out computed header fields
         let mut header = self.header.clone();
-        header.pkt_tracker_offset =
-            header.apid_list_offset + u32::try_from(apid_list.len() * ApidInfo::LEN)?;
+        header.pkt_tracker_offset = header.apid_list_offset
+            + u32::try_from(apid_list.len() * ApidInfo::LEN).map_err(RdrError::IntError)?;
         let tracker_count: u32 = self
             .trackers
             .values()
@@ -376,9 +366,13 @@ impl AggrMeta {
 pub struct GranuleMeta {
     pub instrument: String,
     pub collection: String,
+    #[serde(skip)]
+    pub begin: Time,
     pub begin_date: String,
     pub begin_time: String,
     pub begin_time_iet: u64,
+    #[serde(skip)]
+    pub end: Time,
     pub end_date: String,
     pub end_time: String,
     pub end_time_iet: u64,
@@ -406,19 +400,21 @@ impl GranuleMeta {
 
     pub fn new(time: Time, sat: &SatSpec, product: &ProductSpec) -> Result<Self> {
         let created = Time::now();
-        let start = &time;
-        let end = &Time::from_iet(start.iet() + product.gran_len);
-        let id = granule_id(&sat.short_name, sat.base_time, start.iet())?;
+        let begin = &time;
+        let end = &Time::from_iet(begin.iet() + product.gran_len);
+        let id = granule_id(&sat.short_name, sat.base_time, begin.iet())?;
 
         Ok(Self {
             instrument: product.sensor.to_string(),
             collection: product.short_name.to_string(),
-            begin_date: attr_date(start),
-            begin_time: attr_time(start),
-            begin_time_iet: start.iet(),
+            begin: begin.clone(),
+            begin_date: attr_date(begin),
+            begin_time: attr_time(begin),
+            begin_time_iet: begin.iet(),
+            end: end.clone(),
             end_date: attr_date(end),
             end_time: attr_time(end),
-            end_time_iet: start.iet(),
+            end_time_iet: begin.iet(),
             creation_date: attr_date(&created),
             creation_time: attr_time(&created),
             orbit_number: 1,
@@ -463,12 +459,16 @@ impl GranuleMeta {
             .iter()
             .map(|v| u32::try_from(*v).unwrap_or_default())
             .collect();
+        let begin = Time::from_iet(attr_u64!(&ds, "N_Beginning_Time_IET"));
+        let end = Time::from_iet(attr_u64!(&ds, "N_Ending_Time_IET"));
         Ok(Self {
             instrument: instrument.to_string(),
             collection: collection.to_string(),
+            begin,
             begin_date: attr_string!(&ds, "Beginning_Date"),
             begin_time: attr_string!(&ds, "Beginning_Time"),
             begin_time_iet: attr_u64!(&ds, "N_Beginning_Time_IET"),
+            end,
             end_date: attr_string!(&ds, "Ending_Date"),
             end_time: attr_string!(&ds, "Ending_Time"),
             end_time_iet: attr_u64!(&ds, "N_Ending_Time_IET"),
@@ -637,11 +637,11 @@ pub struct StaticHeader {
 impl StaticHeader {
     pub const LEN: usize = 72;
 
-    pub fn new(time: &Time, sat: &SatSpec, product: &ProductSpec) -> Self {
+    pub fn new(time: &Time, sat: String, product: &ProductSpec) -> Self {
         let start_iet = time.iet();
         let end_iet = start_iet + product.gran_len;
         StaticHeader {
-            satellite: sat.short_name.clone(),
+            satellite: sat.clone(),
             sensor: product.sensor.clone(),
             type_id: product.type_id.clone(),
             num_apids: u32::try_from(product.apids.len()).unwrap(),
@@ -995,7 +995,6 @@ mod tests {
                 .collect::<Vec<_>>()[0];
 
             let time = Time::from_epoch(Epoch::from_str("2020-01-01T12:13:14.123456Z").unwrap());
-            eprintln!("scale:{:?} time:{time:?}", time.time_scale);
             let fname = filename(
                 "npp",
                 "origin",
