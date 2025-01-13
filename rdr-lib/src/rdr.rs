@@ -96,19 +96,32 @@ impl Rdr {
     /// # Errors
     /// If the time is not valid for the given specs
     pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Result<Self> {
-        Self::from_data(sat, product, time, vec![])
+        Ok(Self {
+            meta: GranuleMeta::new(time.clone(), sat, product)?,
+            product_id: product.product_id.to_string(),
+            data: vec![],
+        })
     }
 
     pub fn from_data(
         sat: &SatSpec,
         product: &ProductSpec,
         time: &Time,
-        data: Vec<u8>,
+        data: &RdrData,
     ) -> Result<Self> {
+        let mut meta = GranuleMeta::new(time.clone(), sat, product)?;
+        let mut names: Vec<String> = Vec::default();
+        let mut counts: Vec<u32> = Vec::default();
+        for a in data.apid_list.values() {
+            names.push(a.name.to_string());
+            counts.push(a.pkts_received);
+        }
+        meta.packet_type_count = counts;
+        meta.packet_type = names;
         Ok(Self {
-            meta: GranuleMeta::new(time.clone(), sat, product)?,
+            meta,
             product_id: product.product_id.to_string(),
-            data,
+            data: data.compile()?,
         })
     }
 }
@@ -197,7 +210,7 @@ impl RdrData {
         let tracker_count: u32 = self
             .trackers
             .values()
-            .map(|v| u32::try_from(v.len()).unwrap_or_default())
+            .map(|v| u32::try_from(v.len()).expect("number of trackers does not fit in u32"))
             .sum();
         header.ap_storage_offset =
             header.pkt_tracker_offset + tracker_count * PacketTracker::LEN as u32;
@@ -329,29 +342,22 @@ pub struct AggrMeta {
 }
 
 impl AggrMeta {
+    /// Create meta from the provided [Rdr]s.
+    ///
+    /// # Panics
+    /// If `rdrs` is empty
     pub fn from_rdrs(rdrs: &Vec<Rdr>) -> Self {
-        let mut start_rdr: Option<Rdr> = None;
-        let mut end_rdr: Option<Rdr> = None;
+        assert!(!rdrs.is_empty());
+        let mut start_rdr: Option<&Rdr> = None;
+        let mut end_rdr: Option<&Rdr> = None;
         let mut count: u32 = 0;
         for rdr in rdrs {
-            if start_rdr.is_none() {
-                start_rdr = Some(rdr.clone());
-            }
-            if end_rdr.is_none() {
-                end_rdr = Some(rdr.clone());
-            }
-            start_rdr = Some(
-                std::cmp::min_by(&start_rdr.unwrap(), rdr, |a, b| {
-                    a.meta.begin_time_iet.cmp(&b.meta.begin_time_iet)
-                })
-                .clone(),
-            );
-            end_rdr = Some(
-                std::cmp::max_by(&end_rdr.unwrap(), rdr, |a, b| {
-                    a.meta.end_time_iet.cmp(&b.meta.end_time_iet)
-                })
-                .clone(),
-            );
+            start_rdr = Some(std::cmp::min_by(start_rdr.unwrap_or(rdr), rdr, |a, b| {
+                a.meta.begin_time_iet.cmp(&b.meta.begin_time_iet)
+            }));
+            end_rdr = Some(std::cmp::max_by(end_rdr.unwrap_or(rdr), rdr, |a, b| {
+                a.meta.end_time_iet.cmp(&b.meta.end_time_iet)
+            }));
             count += 1;
         }
 
@@ -361,11 +367,11 @@ impl AggrMeta {
             begin_orbit_nubmer: 1,
             end_orbit_number: 1,
             num_granules: count,
-            begin_date: start_rdr.meta.begin_date,
-            begin_time: start_rdr.meta.begin_time,
+            begin_date: start_rdr.meta.begin_date.clone(),
+            begin_time: start_rdr.meta.begin_time.clone(),
             begin_granule_id: start_rdr.meta.id.to_string(),
-            end_date: end_rdr.meta.end_date,
-            end_time: end_rdr.meta.end_time,
+            end_date: end_rdr.meta.end_date.clone(),
+            end_time: end_rdr.meta.end_time.clone(),
             end_granule_id: end_rdr.meta.id.to_string(),
         }
     }
@@ -445,6 +451,7 @@ impl GranuleMeta {
 
     /// Read RDR grnaule metadata from a [Dataset].
     fn from_dataset(instrument: &str, collection: &str, ds: &Dataset) -> Result<Self> {
+        // Read packet type
         let attr = try_h5!(ds.attr("N_Packet_Type"), "accessing N_Packet_Type")?;
         let packet_type: Vec<String> = try_h5!(
             attr.read_2d::<FixedAscii<MAX_STR_LEN>>(),
@@ -458,6 +465,8 @@ impl GranuleMeta {
         .flat_map(|x| x.iter())
         .map(|fa| fa.to_string())
         .collect();
+
+        // Read packet type count
         let packet_type_count: Vec<u32> = ds
             .attr("N_Packet_Type_Count")?
             .read_2d::<u64>()?
@@ -466,6 +475,7 @@ impl GranuleMeta {
             .iter()
             .map(|v| u32::try_from(*v).unwrap_or_default())
             .collect();
+
         let begin = Time::from_iet(attr_u64!(&ds, "N_Beginning_Time_IET"));
         let end = Time::from_iet(attr_u64!(&ds, "N_Ending_Time_IET"));
         Ok(Self {

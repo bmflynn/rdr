@@ -12,8 +12,11 @@ pub enum RdrError {
     #[error("Invalid packet {0:?}")]
     InvalidPacket(PrimaryHeader),
 
-    #[error("failed to convert integer")]
+    #[error("Failed to convert integer")]
     IntError(#[from] TryFromIntError),
+
+    #[error("Invalid value")]
+    Invalid(String),
 }
 
 #[derive(thiserror::Error, Debug)]

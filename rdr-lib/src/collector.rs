@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ccsds::spacepacket::{Apid, Packet, PacketGroup, TimecodeDecoder};
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::{
     config::{ProductSpec, RdrSpec, SatSpec},
@@ -86,7 +86,7 @@ impl Collector {
                         &self.sat,
                         packed_product,
                         packed_time,
-                        data.compile()?,
+                        data,
                     )?);
                 }
             }
@@ -149,7 +149,7 @@ impl Collector {
             );
             if let Some(data) = self.primary.remove(&second_to_last_key) {
                 let complete_time = second_to_last_key.1;
-                let rdr = Rdr::from_data(&self.sat, product, &complete_time, data.compile()?)?;
+                let rdr = Rdr::from_data(&self.sat, product, &complete_time, &data)?;
                 let packed = self.overlapping_packed_rdrs(&rdr)?;
                 let mut rdrs = vec![rdr];
                 rdrs.extend_from_slice(&packed);
@@ -182,7 +182,7 @@ impl Collector {
             let key = (pid.clone(), time.clone());
             let product = self.products.get(pid).expect("spec for existing id");
             let data = self.primary.remove(&key).unwrap(); // already verified it exists
-            let rdr = Rdr::from_data(&self.sat, product, time, data.compile()?)?;
+            let rdr = Rdr::from_data(&self.sat, product, time, &data)?;
 
             let packed = self.overlapping_packed_rdrs(&rdr)?;
             let mut rdrs = vec![rdr];

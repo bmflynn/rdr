@@ -9,7 +9,6 @@ use std::{
 use hdf5::{types::FixedAscii, File};
 use hdfc::{create_dataproducts_aggr_dataset, create_dataproducts_gran_dataset};
 use ndarray::{arr1, arr2, Dim};
-use serde_yaml::with;
 
 use crate::{
     attr_date, attr_time,
@@ -193,7 +192,7 @@ fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &s
     wattnum!(dataset, u64, "N_Beginning_Time_IET", meta.begin_time_iet);
     wattnum!(dataset, u64, "N_Ending_Time_IET", meta.end_time_iet);
 
-    // Create H5 arrays from rust types
+    // Compute packet type/count arrays
     let mut pkt_type_arr: Vec<[FixedAscii<17>; 1]> = Vec::default();
     let mut pkt_type_cnt_arr: Vec<u64> = Vec::default();
     for (name, count) in meta.packet_type.iter().zip(&meta.packet_type_count) {
@@ -204,6 +203,8 @@ fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &s
         pkt_type_arr.push([ascii]);
         pkt_type_cnt_arr.push(u64::from(*count));
     }
+
+    // Write N_Packet_Type
     let name = "N_Packet_Type";
     let attr = try_h5!(
         dataset

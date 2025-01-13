@@ -177,8 +177,11 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
         granules.sort_unstable_by_key(|item| item.meta.begin_time_iet);
         for (gran_idx, item) in granules.iter().enumerate() {
             let data = std::fs::read(&item.path)?;
-            let rdr = Rdr::from_data(&item.sat, &item.product, &item.meta.begin, data)
-                .with_context(|| format!("creating RDR {short_name} granule {gran_idx}"))?;
+            let rdr = Rdr {
+                product_id: item.product.product_id.to_string(),
+                meta: item.meta.clone(),
+                data,
+            };
             write_rdr_granule(&file, gran_idx, &rdr)
                 .with_context(|| format!("writing RDR {short_name} granule {gran_idx}"))?;
         }
