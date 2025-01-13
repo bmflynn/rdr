@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ccsds::spacepacket::{Apid, Packet, PacketGroup, TimecodeDecoder};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::{
     config::{ProductSpec, RdrSpec, SatSpec},
@@ -14,18 +14,18 @@ use crate::{
 /// Collects individual product Rdr data.
 pub struct Collector {
     sat: SatSpec,
-    // Maps the promary RDR products ids to the ids of products they're packed with
+    /// Maps the promary RDR products ids to the ids of products they're packed with
     primary_ids: HashMap<String, Vec<String>>,
-    // ids of all packed products we're collecting
+    /// ids of all packed products we're collecting
     packed_ids: HashSet<String>,
-    // Maps product_id to spec
+    /// Maps product_id to spec
     products: HashMap<String, ProductSpec>,
-    // Maps apids to product_id. If a packet apid is not in this map it cannot be added
+    /// Maps apids to product_id. If a packet apid is not in this map it cannot be added
     ids: HashMap<Apid, String>,
 
-    // Maps product and RDR granule time to an RDR
+    /// Maps product and RDR granule time to an RDR
     primary: HashMap<(String, Time), RdrData>,
-    // Maps packed product and RDR granule time to an RDR
+    /// Maps packed product and RDR granule time to an RDR
     packed: HashMap<(String, Time), RdrData>,
 }
 
@@ -67,15 +67,17 @@ impl Collector {
     ///
     /// This is all granules where the packet granule start is within its granule length of
     /// the start of the primary granule start and less than the primary granule end.
-    fn overlapping_packed_granules(&self, rdr: &Rdr) -> Result<Vec<Rdr>> {
+    fn overlapping_packed_rdrs(&self, rdr: &Rdr) -> Result<Vec<Rdr>> {
+        let primary_gran_start = rdr.meta.begin_time_iet as i64;
+        let primary_gran_end = rdr.meta.end_time_iet as i64;
         let mut packed = Vec::default();
+
         for packed_id in &self.packed_ids {
             let packed_product = self.products.get(packed_id).expect("spec for existing id");
-            for ((_, packed_time), packed_rdr) in &self.packed {
+            let packed_gran_len = i64::try_from(packed_product.gran_len).unwrap();
+
+            for ((_, packed_time), data) in &self.packed {
                 let packed_gran_start = packed_time.iet() as i64;
-                let primary_gran_start = rdr.meta.begin_time_iet as i64;
-                let primary_gran_end = rdr.meta.end_time_iet as i64;
-                let packed_gran_len = i64::try_from(packed_product.gran_len).unwrap();
 
                 if packed_gran_start > primary_gran_start - packed_gran_len
                     && packed_gran_start < primary_gran_end
@@ -84,11 +86,15 @@ impl Collector {
                         &self.sat,
                         packed_product,
                         packed_time,
-                        packed_rdr.compile()?,
+                        data.compile()?,
                     )?);
                 }
             }
         }
+        trace!(
+            "{} overlapping granules for start={primary_gran_start} end={primary_gran_end}",
+            packed.len()
+        );
         Ok(packed)
     }
 
@@ -120,12 +126,11 @@ impl Collector {
             )));
         }
 
-        let key = (prod_id.clone(), gran_time.clone());
-
-        // If this product is for a primary product RDR add it to the primary collection
+        // If this packet is for a primary product RDR add it to the primary collection
+        let key = (product.product_id.clone(), gran_time.clone());
         if self.primary_ids.contains_key(prod_id) {
             {
-                let rdr = self.primary.entry(key).or_insert_with(|| {
+                let data = self.primary.entry(key).or_insert_with(|| {
                     trace!(
                         "new primary granule product_id={} granule={:?}",
                         product.product_id,
@@ -133,20 +138,19 @@ impl Collector {
                     );
                     RdrData::new(&self.sat, product, &gran_time)
                 });
-                rdr.add_packet(pkt_time, pkt).unwrap();
+                data.add_packet(pkt_time, pkt)?;
             }
 
-            // Check to see if the second to last granule is complete. We can't check the
-            // last granule because it may not yet have enough data available for the packed
-            // products.
+            // If the second to last primary granule exists we assume it has had a chance to get
+            // any overlapping packed products it may need, so we consider it "complete".
             let second_to_last_key = (
-                prod_id.clone(),
+                product.product_id.clone(),
                 Time::from_iet(gran_time.iet() - product.gran_len * 2),
             );
-            if self.primary.contains_key(&second_to_last_key) {
-                let data = self.primary.remove(&second_to_last_key).unwrap(); // already verified it exists
-                let rdr = Rdr::from_data(&self.sat, product, &gran_time, data.compile()?)?;
-                let packed = self.overlapping_packed_granules(&rdr)?;
+            if let Some(data) = self.primary.remove(&second_to_last_key) {
+                let complete_time = second_to_last_key.1;
+                let rdr = Rdr::from_data(&self.sat, product, &complete_time, data.compile()?)?;
+                let packed = self.overlapping_packed_rdrs(&rdr)?;
                 let mut rdrs = vec![rdr];
                 rdrs.extend_from_slice(&packed);
                 Ok(Some(rdrs))
@@ -154,16 +158,17 @@ impl Collector {
                 Ok(None)
             }
         } else {
+            assert!(self.packed_ids.contains(&product.product_id));
             // FIXME: Figure out how to clean up packed products
-            let rdr = self.packed.entry(key).or_insert_with(|| {
+            let data = self.packed.entry(key).or_insert_with(|| {
                 trace!(
-                    "new packed granule product_id={} granule={:?}",
+                    "new packed granule product_id={} time={:?}",
                     product.product_id,
                     gran_time,
                 );
                 RdrData::new(&self.sat, product, &gran_time)
             });
-            rdr.add_packet(pkt_time, pkt).unwrap();
+            data.add_packet(pkt_time, pkt)?;
             Ok(None)
         }
     }
@@ -177,9 +182,9 @@ impl Collector {
             let key = (pid.clone(), time.clone());
             let product = self.products.get(pid).expect("spec for existing id");
             let data = self.primary.remove(&key).unwrap(); // already verified it exists
-            let rdr = Rdr::from_data(&self.sat, product, &time, data.compile()?)?;
+            let rdr = Rdr::from_data(&self.sat, product, time, data.compile()?)?;
 
-            let packed = self.overlapping_packed_granules(&rdr)?;
+            let packed = self.overlapping_packed_rdrs(&rdr)?;
             let mut rdrs = vec![rdr];
             rdrs.extend_from_slice(&packed);
             finished.push(rdrs);

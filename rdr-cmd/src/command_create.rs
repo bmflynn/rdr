@@ -6,6 +6,7 @@ use rdr::{
     jpss_merge, Collector, Meta, PacketTimeIter, Time,
 };
 use std::{
+    collections::HashMap,
     fs::{create_dir, File},
     io::{BufReader, BufWriter},
     path::{Path, PathBuf},
@@ -45,12 +46,20 @@ where
                     }
                 };
                 if let Some(rdrs) = complete {
-                    debug!("collected {}", &rdrs[0]);
+                    let mut counts: HashMap<String, usize> = HashMap::default();
+                    for r in &rdrs {
+                        *counts.entry(r.meta.collection.to_string()).or_default() += 1;
+                    }
+                    debug!("collected RDR {:?} {:?}", &rdrs[0].meta.begin, counts);
                     let _ = tx.send(rdrs);
                 }
             }
             for rdrs in collector.finish().expect("finishing collection") {
-                debug!("collected {}", &rdrs[0]);
+                let mut counts: HashMap<String, usize> = HashMap::default();
+                for r in &rdrs {
+                    *counts.entry(r.meta.collection.to_string()).or_default() += 1;
+                }
+                debug!("collected RDR {:?} {:?}", &rdrs[0].meta.begin, counts);
                 let _ = tx.send(rdrs);
             }
         });
@@ -58,12 +67,15 @@ where
         s.spawn(move || {
             let created = Time::now();
             for rdrs in rx {
+                let (start, end, pids) = rdr::rdr_filename_meta(&rdrs);
                 let fpath = dest.join(rdr::filename(
                     &config.satellite.id,
                     &config.origin,
                     &config.mode,
                     &created,
-                    &rdrs,
+                    &start,
+                    &end,
+                    &pids,
                 ));
                 let short_names: Vec<String> =
                     rdrs.iter().map(|r| r.meta.collection.to_string()).collect();

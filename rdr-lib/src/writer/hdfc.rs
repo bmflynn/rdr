@@ -4,7 +4,7 @@ use hdf5_sys::{
     h5d::{H5Dclose, H5Dcreate2, H5Dget_space, H5Dopen2, H5Dwrite},
     h5g::{H5Gclose, H5Gopen},
     h5i::H5I_INVALID_HID,
-    h5p::H5P_DEFAULT,
+    h5p::{H5Pcreate, H5Pset_create_intermediate_group, H5P_CLS_LINK_CREATE, H5P_DEFAULT},
     h5r::{
         hdset_reg_ref_t, hobj_ref_t,
         H5R_type_t::{H5R_DATASET_REGION, H5R_OBJECT},
@@ -14,8 +14,6 @@ use hdf5_sys::{
     h5t::{H5T_STD_REF_DSETREG, H5T_STD_REF_OBJ},
 };
 use std::ffi::{c_char, c_void, CString};
-
-use crate::error::H5Error;
 
 macro_rules! cstr {
     ($s:expr) => {
@@ -30,20 +28,17 @@ macro_rules! cstr {
 }
 
 macro_rules! chkid {
-    ($id:expr, $name:expr, $msg:expr) => {
+    ($id:expr, $path:expr, $msg:expr) => {
         if $id == H5I_INVALID_HID {
-            return Err(H5Error::Sys(format!("invalid hdf5 id: {}", $id)));
+            return Err(format!("{} path={}", $msg, $path));
         }
     };
 }
 
 macro_rules! chkerr {
-    ($id:expr, $name:expr, $msg:expr) => {
+    ($id:expr, $path:expr, $msg:expr) => {
         if $id < 0 {
-            return Err(H5Error::Sys(format!(
-                "err={} object={}: {}",
-                $id, $name, $msg
-            )));
+            return Err(format!("{} path={}", $msg, $path));
         }
     };
 }
@@ -58,10 +53,10 @@ pub(crate) fn create_dataproducts_gran_dataset(
     file: &File,
     short_name: &str,
     src_path: &str,
-) -> std::result::Result<String, H5Error> {
-    let (src_group_path, _) = src_path
-        .rsplit_once('/')
-        .expect("dataset path to have 3 parts");
+) -> std::result::Result<String, String> {
+    let Some((src_group_path, src_dataset_name)) = src_path.rsplit_once('/') else {
+        return Err("invalid source path".to_string());
+    };
     let src_group_id = unsafe { H5Gopen(file.id(), cstr!(src_group_path), H5P_DEFAULT) };
     chkid!(
         src_group_id,
@@ -89,9 +84,6 @@ pub(crate) fn create_dataproducts_gran_dataset(
         src_path.to_string(),
         "selecting dataspace".to_string()
     );
-    let (_, src_dataset_name) = src_path
-        .rsplit_once('/')
-        .expect("dataset path to have 3 parts");
 
     let mut ref_id: hdset_reg_ref_t = [0; 12];
     let errid = unsafe {
@@ -147,7 +139,7 @@ pub(crate) fn create_dataproducts_gran_dataset(
     chkid!(
         dst_dataset_id,
         dst_dataset_name.to_string(),
-        format!("creating dest dataset with reference: {dst_dataset_name}")
+        "creating dest dataset reference"
     );
 
     let errid = unsafe {
@@ -184,9 +176,9 @@ pub(crate) fn create_dataproducts_gran_dataset(
 pub(crate) fn create_dataproducts_aggr_dataset(
     file: &File,
     short_name: &str,
-) -> std::result::Result<String, H5Error> {
-    // Create an object reference to the source group
-    let src_group_path = format!("All_Data/{0}_All", short_name);
+) -> std::result::Result<String, String> {
+    // Create an object reference to the source group that will be written to aggr dataset
+    let src_group_path = format!("/All_Data/{0}_All", short_name);
     let mut ref_id: hobj_ref_t = 0;
     let errid = unsafe {
         H5Rcreate(
@@ -204,42 +196,41 @@ pub(crate) fn create_dataproducts_aggr_dataset(
         format!("creating ref to group: {src_group_path}")
     );
 
-    // Create the _Aggr dataset
-    // Need the group id to create the dataset in
-    let dst_group_path = format!("/Data_Products/{0}", short_name);
-    let dst_group_id =
-        unsafe { H5Gopen(file.id(), cstr!(dst_group_path.to_string()), H5P_DEFAULT) };
-    chkid!(
-        dst_group_id,
-        dst_group_path.to_string(),
-        format!("opening dest group: {dst_group_path}")
-    );
     // Now, create the dataset in that group
     let dst_dataset_path = format!("/Data_Products/{0}/{0}_Aggr", short_name);
     let dim = [1 as hsize_t];
-    let dst_space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), std::ptr::null()) };
+    let space_id = unsafe { H5Screate_simple(1, dim.as_ptr(), std::ptr::null()) };
+    chkid!(space_id, &dst_dataset_path, "creating dataset dataspace");
+
+    // Set properties to automatically create intermediate groups
+    let lcpl_id = unsafe { H5Pcreate(*H5P_CLS_LINK_CREATE) };
     chkid!(
-        dst_space_id,
-        src_dataset_name.to_string(),
-        "creating dest dataset dataspace".to_string()
+        lcpl_id,
+        &dst_dataset_path,
+        "creating dataset link properites"
     );
+    let errid = unsafe { H5Pset_create_intermediate_group(lcpl_id, 1) };
+    chkerr!(errid, &dst_dataset_path, "setting dataset link properites");
+
+    // Create the dataset with reference data type
     let dst_dataset_id = unsafe {
         H5Dcreate2(
             file.id(),
             cstr!(dst_dataset_path.clone()),
             *H5T_STD_REF_OBJ,
-            dst_space_id,
-            H5P_DEFAULT,
+            space_id,
+            lcpl_id,
             H5P_DEFAULT,
             H5P_DEFAULT,
         )
     };
     chkid!(
         dst_dataset_id,
-        dst_dataset_name.to_string(),
-        format!("creating dest dataset with reference: {dst_dataset_name}")
+        dst_dataset_path,
+        "creating dataset w/reference"
     );
 
+    // Write the ref to our dataset
     let refs: [hobj_ref_t; 1] = [ref_id];
     let errid = unsafe {
         H5Dwrite(
@@ -251,15 +242,10 @@ pub(crate) fn create_dataproducts_aggr_dataset(
             refs.as_ptr().cast(),
         )
     };
-    chkerr!(
-        errid,
-        dst_dataset_path,
-        "writing ref to dest dataset".to_string()
-    );
+    chkerr!(errid, dst_dataset_path, "writing ref to dataset");
 
     unsafe {
-        H5Gclose(dst_group_id);
-        H5Sclose(dst_space_id);
+        H5Sclose(space_id);
         H5Dclose(dst_dataset_id);
     }
 

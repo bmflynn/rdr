@@ -9,13 +9,13 @@ use std::{
 use tracing::{debug, trace};
 
 use crate::{
-    error::{Error, H5Error, RdrError, Result},
+    error::{Error, RdrError, Result},
     Time,
 };
 
 macro_rules! try_h5 {
     ($obj:expr, $msg:expr) => {
-        $obj.map_err(|e| H5Error::Other(format!("{}: {}", $msg.to_string(), e)))
+        $obj.map_err(|e| Error::Hdf5Sys(format!("{}: {}", $msg.to_string(), e)))
     };
 }
 
@@ -116,12 +116,12 @@ impl Rdr {
 /// Collects metadata and packets into a common RDR structures.
 #[derive(Debug, Clone)]
 pub struct RdrData {
-    short_name: String,
-    header: StaticHeader,
-    apid_list: HashMap<Apid, ApidInfo>,
-    trackers: HashMap<Apid, Vec<PacketTracker>>,
-    ap_storage: VecDeque<(u64, Packet)>,
-    ap_storage_offset: i32,
+    pub short_name: String,
+    pub header: StaticHeader,
+    pub apid_list: HashMap<Apid, ApidInfo>,
+    pub trackers: HashMap<Apid, Vec<PacketTracker>>,
+    pub ap_storage: VecDeque<(u64, Packet)>,
+    pub ap_storage_offset: i32,
 }
 
 impl RdrData {
@@ -140,19 +140,20 @@ impl RdrData {
         }
     }
 
+    /// Add a packet.
+    ///
+    /// # Errors
+    /// On packet decode errors, typically, numerical overflow of expected header value types.
     pub fn add_packet(&mut self, pkt_time: &Time, pkt: Packet) -> Result<()> {
         let info = self
             .apid_list
             .get_mut(&pkt.header.apid)
-            .ok_or(RdrError::InvalidPktApid(
-                self.short_name.to_string(),
-                pkt.header.apid,
-            ))?;
+            .ok_or(RdrError::InvalidPacket(pkt.header))?;
         info.pkts_reserved += 1;
         info.pkts_received += 1;
 
         let pkt_size =
-            i32::try_from(pkt.data.len()).map_err(|_| RdrError::InvalidPktHeader(pkt.header))?;
+            i32::try_from(pkt.data.len()).map_err(|_| RdrError::InvalidPacket(pkt.header))?;
         let trackers = self.trackers.entry(pkt.header.apid).or_default();
         trackers.push(PacketTracker {
             obs_time: i64::try_from(pkt_time.iet())
@@ -249,7 +250,7 @@ macro_rules! attr_string {
     ($obj:expr, $name:expr) => {
         $obj.attr($name)?
             .read_2d::<FixedAscii<MAX_STR_LEN>>()
-            .map_err(|e| H5Error::Sys(format!("reading string attr {}: {}", $name, e)))?[[0, 0]]
+            .map_err(|e| Error::Hdf5Other(format!("reading string attr {}: {}", $name, e)))?[[0, 0]]
         .to_string()
     };
 }
@@ -258,15 +259,14 @@ macro_rules! attr_u64 {
     ($obj:expr, $name:expr) => {
         $obj.attr($name)?
             .read_2d::<u64>()
-            .map_err(|e| H5Error::Sys(format!("reading u64 attr {}: {}", $name, e)))?[[0, 0]]
+            .map_err(|e| Error::Hdf5Other(format!("reading u64 attr {}: {}", $name, e)))?[[0, 0]]
     };
 }
 
-/// Create an IDPS style RDR filename
-pub fn filename(satid: &str, origin: &str, mode: &str, created: &Time, rdrs: &[Rdr]) -> String {
-    let mut product_ids: HashSet<String> = HashSet::default();
+pub fn rdr_filename_meta(rdrs: &[Rdr]) -> (Time, Time, Vec<String>) {
     let mut start = Time::now().iet();
     let mut end = 0;
+    let mut product_ids: HashSet<String> = HashSet::default();
     for rdr in rdrs {
         // Only science types determine file time. There should only be one science type but we
         // leave that to the caller and just compute times based on all science types.
@@ -276,11 +276,22 @@ pub fn filename(satid: &str, origin: &str, mode: &str, created: &Time, rdrs: &[R
         }
         product_ids.insert(rdr.product_id.to_string());
     }
-    let mut product_ids: Vec<String> = Vec::from_iter(product_ids);
+    let mut product_ids = Vec::from_iter(product_ids);
     product_ids.sort();
 
-    let start = Time::from_iet(start);
-    let end = Time::from_iet(end);
+    (Time::from_iet(start), Time::from_iet(end), product_ids)
+}
+
+/// Create an IDPS style RDR filename
+pub fn filename(
+    satid: &str,
+    origin: &str,
+    mode: &str,
+    created: &Time,
+    start: &Time,
+    end: &Time,
+    product_ids: &[String],
+) -> String {
     format!(
         // FIXME: hard-coded orbit number
         "{}_{}_d{}_t{}_e{}_b00000_c{}_{}u_{}.h5",
@@ -414,7 +425,7 @@ impl GranuleMeta {
             end: end.clone(),
             end_date: attr_date(end),
             end_time: attr_time(end),
-            end_time_iet: begin.iet(),
+            end_time_iet: end.iet(),
             creation_date: attr_date(&created),
             creation_time: attr_time(&created),
             orbit_number: 1,
@@ -433,18 +444,14 @@ impl GranuleMeta {
     }
 
     /// Read RDR grnaule metadata from a [Dataset].
-    fn from_dataset(
-        instrument: &str,
-        collection: &str,
-        ds: &Dataset,
-    ) -> std::result::Result<Self, H5Error> {
+    fn from_dataset(instrument: &str, collection: &str, ds: &Dataset) -> Result<Self> {
         let attr = try_h5!(ds.attr("N_Packet_Type"), "accessing N_Packet_Type")?;
         let packet_type: Vec<String> = try_h5!(
             attr.read_2d::<FixedAscii<MAX_STR_LEN>>(),
             "reading N_Packet_Type"
         )?
         .as_slice()
-        .ok_or(H5Error::Sys(
+        .ok_or(Error::Hdf5Other(
             "failed to create slice for N_Packet_Type".to_string(),
         ))
         .into_iter()
@@ -455,7 +462,7 @@ impl GranuleMeta {
             .attr("N_Packet_Type_Count")?
             .read_2d::<u64>()?
             .as_slice()
-            .ok_or(H5Error::Other("failed to read dataset".to_string()))?
+            .ok_or(Error::Hdf5Other("failed to read dataset".to_string()))?
             .iter()
             .map(|v| u32::try_from(*v).unwrap_or_default())
             .collect();
@@ -522,7 +529,7 @@ impl ProductMeta {
         }
     }
 
-    fn from_group(grp: &Group) -> std::result::Result<Self, H5Error> {
+    fn from_group(grp: &Group) -> Result<Self> {
         Ok(Self {
             instrument: attr_string!(&grp, "Instrument_Short_Name"),
             collection: attr_string!(&grp, "N_Collection_Short_Name"),
@@ -549,7 +556,7 @@ pub struct Meta {
 
 impl Meta {
     /// Create from the contents of a hdf5 file.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> std::result::Result<Self, H5Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = hdf5::File::open(path)?;
         let mut meta = Meta {
             distributor: attr_string!(&file, "Distributor"),
@@ -976,34 +983,19 @@ mod tests {
         use hifitime::Epoch;
         use std::str::FromStr;
 
-        use crate::{config::get_default, rdr::Rdr};
-
         use super::*;
 
         #[test]
         fn packed_rdrs() {
-            let config = get_default("npp").unwrap().unwrap();
-            let primary = config
-                .products
-                .iter()
-                .filter(|p| p.product_id == "RVIRS")
-                .collect::<Vec<_>>()[0];
-            let packed = config
-                .products
-                .iter()
-                .filter(|p| p.product_id == "RNSCA")
-                .collect::<Vec<_>>()[0];
-
             let time = Time::from_epoch(Epoch::from_str("2020-01-01T12:13:14.123456Z").unwrap());
             let fname = filename(
                 "npp",
                 "origin",
                 "ops",
                 &Time::now(), // created
-                &[
-                    Rdr::new(&config.satellite, primary, &time).unwrap(),
-                    Rdr::new(&config.satellite, packed, &time).unwrap(),
-                ],
+                &time,
+                &time,
+                &["RNSCA".to_string(), "RVIRS".to_string()],
             );
 
             let (prefix, _) = fname.split_once('_').unwrap();
@@ -1017,20 +1009,15 @@ mod tests {
 
         #[test]
         fn no_packed_rdrs() {
-            let config = get_default("npp").unwrap().unwrap();
-            let primary = config
-                .products
-                .iter()
-                .filter(|p| p.product_id == "RVIRS")
-                .collect::<Vec<_>>()[0];
-
             let time = Time::from_epoch(Epoch::from_str("2020-01-01T12:13:14.123456Z").unwrap());
             let fname = filename(
                 "npp",
                 "origin",
                 "ops",
-                &Time::now(), // created
-                &[Rdr::new(&config.satellite, primary, &time).unwrap()],
+                &time,
+                &time,
+                &time,
+                &["RVIRS".to_string()],
             );
 
             let (prefix, _) = fname.split_once('_').unwrap();

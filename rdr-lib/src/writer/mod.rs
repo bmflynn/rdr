@@ -1,22 +1,26 @@
 mod hdfc;
 
 use core::fmt;
-use std::path::Path;
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use hdf5::{types::FixedAscii, File};
 use hdfc::{create_dataproducts_aggr_dataset, create_dataproducts_gran_dataset};
 use ndarray::{arr1, arr2, Dim};
+use serde_yaml::with;
 
 use crate::{
     attr_date, attr_time,
-    error::{H5Error, Result},
+    error::{Error, Result},
     rdr::Rdr,
-    AggrMeta, GranuleMeta, Meta, ProductMeta,
+    AggrMeta, GranuleMeta, Meta, ProductMeta, Time,
 };
 
 macro_rules! try_h5 {
     ($obj:expr, $msg:expr) => {
-        $obj.map_err(|e| H5Error::Other(format!("{}: {}", $msg.to_string(), e)))
+        $obj.map_err(|e| Error::Hdf5Sys(format!("{}: {}", $msg.to_string(), e)))
     };
 }
 
@@ -30,14 +34,14 @@ macro_rules! wattstr {
                         &(($value.clone())[..std::cmp::min($maxlen, $value.len())]),
                     )
                     .map_err(|e| {
-                        H5Error::Other(format!(
+                        Error::Hdf5Sys(format!(
                             "creating ascii value {} for {}: {e}",
                             $name, $value
                         ))
                     })?
                 ]]))
                 .create($name),
-            format!("writeing str attr {} value {}", $name, $value)
+            format!("writing str attr {} value {}", $name, $value)
         )?;
     };
 }
@@ -56,33 +60,31 @@ macro_rules! wattnum {
 
 /// Write a JPSS H5 RDR file from the provided RDR metadata and granule data.
 pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr]) -> Result<()> {
-    let file = if std::fs::exists(&fpath)? {
-        try_h5!(
-            File::open(&fpath),
-            format!("opening {:?}", fpath.as_ref().to_path_buf())
-        )?
-    } else {
-        try_h5!(
-            File::create(&fpath),
-            format!("creating {:?}", fpath.as_ref().to_path_buf())
-        )?
-    };
+    let file = try_h5!(
+        File::create(&fpath),
+        format!("creating {:?}", fpath.as_ref().to_path_buf())
+    )?;
 
-    wattstr!(file, "Distributor", meta.distributor, 4);
-    wattstr!(file, "Mission_Name", meta.mission.clone(), 20);
-    wattstr!(file, "Platform_Short_Name", meta.platform.clone(), 3);
-    wattstr!(file, "N_Dataset_Source", meta.dataset_source, 4);
-    wattstr!(file, "N_HDF_Creation_Date", attr_date(&meta.created), 8);
-    wattstr!(file, "N_HDF_Creation_Time", attr_time(&meta.created), 16);
+    write_rdr_meta(
+        &file,
+        &meta.distributor,
+        &meta.mission,
+        &meta.platform,
+        &meta.dataset_source,
+        &meta.created,
+    )?;
 
     try_h5!(file.create_group("All_Data"), "creating All_Data")?;
     try_h5!(file.create_group("Data_Products"), "creating Data_Products")?;
 
     // Write RDR granule datasets (All_Data, Data_Products)
-    let mut short_names = Vec::default();
-    for (gran_idx, rdr) in rdrs.iter().enumerate() {
-        write_rdr_granule(&file, gran_idx, rdr)?;
-        short_names.push(rdr.meta.collection.to_string());
+    let mut short_names: HashSet<String> = HashSet::default();
+    let mut indexes: HashMap<String, usize> = HashMap::default();
+    for rdr in rdrs.iter() {
+        let gran_idx = indexes.get(&rdr.meta.collection).unwrap_or(&0);
+        write_rdr_granule(&file, *gran_idx, rdr)?;
+        short_names.insert(rdr.meta.collection.to_string());
+        indexes.insert(rdr.meta.collection.to_string(), gran_idx + 1);
     }
 
     // Write RDR Aggr datasets (Data_Products)
@@ -93,12 +95,26 @@ pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr
             .cloned()
             .collect::<Vec<Rdr>>();
         let meta = AggrMeta::from_rdrs(&rdrs);
-        try_h5!(
-            write_aggr_dataset(&file, &short_name, &meta),
-            format!("writing {} rdr aggr to Data_Products", short_name)
-        )?;
+        write_aggr_dataset(&file, &short_name, &meta)?
     }
 
+    Ok(())
+}
+
+pub fn write_rdr_meta(
+    file: &File,
+    dist: &str,
+    mission: &str,
+    plat: &str,
+    source: &str,
+    created: &Time,
+) -> Result<()> {
+    wattstr!(file, "Distributor", dist, 4);
+    wattstr!(file, "Mission_Name", mission, 20);
+    wattstr!(file, "Platform_Short_Name", plat, 3);
+    wattstr!(file, "N_Dataset_Source", source, 4);
+    wattstr!(file, "N_HDF_Creation_Date", attr_date(created), 8);
+    wattstr!(file, "N_HDF_Creation_Time", attr_time(created), 16);
     Ok(())
 }
 
@@ -234,9 +250,8 @@ fn write_aggr_dataset(file: &File, short_name: &str, meta: &AggrMeta) -> Result<
 
     let dataset_path = try_h5!(
         create_dataproducts_aggr_dataset(file, short_name),
-        "writing aggr object ref dataset"
+        format!("creating aggr dataset for {short_name}")
     )?;
-
     let dataset = try_h5!(
         file.dataset(&dataset_path),
         format!("opening dataset {dataset_path}")

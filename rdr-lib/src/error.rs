@@ -9,30 +9,11 @@ pub enum RdrError {
     InvalidTime(u64),
     #[error("Granule start is less than spacecraft base time: {0}")]
     InvalidGranuleStart(u64),
-    #[error("Invalid packet header {0:?}")]
-    InvalidPktHeader(PrimaryHeader),
-    #[error("Invalid packet apid for RDR product {0} {1}")]
-    InvalidPktApid(String, u16),
+    #[error("Invalid packet {0:?}")]
+    InvalidPacket(PrimaryHeader),
 
     #[error("failed to convert integer")]
     IntError(#[from] TryFromIntError),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum H5Error {
-    /// Error calling the hdf5-sys (ffi).
-    #[error("{0}")]
-    Sys(String),
-
-    #[error(transparent)]
-    Hdf5(#[from] hdf5::Error),
-
-    #[error(transparent)]
-    Hdf5String(#[from] hdf5::types::StringError),
-
-    /// General error
-    #[error("hdf5 error: {0}")]
-    Other(String),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -47,9 +28,6 @@ pub enum Error {
     Utf8Error(#[from] Utf8Error),
 
     #[error(transparent)]
-    H5(#[from] H5Error),
-
-    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error("Config invalid: {0}")]
@@ -62,6 +40,15 @@ pub enum Error {
 
     #[error(transparent)]
     RdrError(#[from] RdrError),
+
+    #[error(transparent)]
+    Hdf5(#[from] hdf5::Error),
+
+    #[error("{0}")]
+    Hdf5Other(String),
+
+    #[error("hdf5-c erorr: {0}")]
+    Hdf5Sys(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

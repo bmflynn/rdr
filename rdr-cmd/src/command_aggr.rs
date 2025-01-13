@@ -1,11 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use hdf5::File;
 use rdr::{
     config::{get_default, Config, ProductSpec, SatSpec},
-    write_rdr_granule, GranuleMeta, Meta, Rdr,
+    write_rdr_granule, GranuleMeta, Meta, Rdr, Time,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use tracing::{error, info, info_span, warn};
@@ -25,11 +25,40 @@ fn get_config(satid: &str) -> Result<Config> {
         .context("lookup failed")
 }
 
-pub fn create_file() -> Result<File> {
-    let file = File::create("output.h5")?;
+pub fn create_file(
+    config: &Config,
+    start: &Time,
+    end: &Time,
+    product_ids: &[String],
+    workdir: &Path,
+) -> Result<(PathBuf, File)> {
+    let mut product_ids = Vec::from_iter(product_ids.iter().cloned());
+    product_ids.sort();
+    let created = Time::now();
+    let fname = rdr::filename(
+        &config.satellite.id,
+        "dev",
+        "dev",
+        &created,
+        start,
+        end,
+        &product_ids,
+    );
+    let fpath = workdir.join(&fname);
+    let file = File::create(&fpath)?;
+
+    rdr::write_rdr_meta(
+        &file,
+        &config.distributor,
+        &config.satellite.mission,
+        &config.satellite.short_name,
+        &config.distributor,
+        &created,
+    )?;
+
     file.create_group("/All_Data")?;
     file.create_group("/Data_Products")?;
-    Ok(file)
+    Ok((fpath, file))
 }
 
 pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<PathBuf> {
@@ -37,6 +66,10 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
     // short_name to RDRs
     let mut outputs: HashMap<String, Vec<Item>> = Default::default();
     let mut granule_count: usize = 0;
+    let mut start = Time::now();
+    let mut end = Time::from_iet(0);
+    let mut product_ids: HashSet<String> = HashSet::default();
+    let mut config: Option<Config> = None;
 
     // Extract RDR data to workdir in dirs named for input file names. Collect data necessary to
     // construct aggregated file.
@@ -56,10 +89,28 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
         };
 
         let input_meta = Meta::from_file(input)?;
-        let config = get_config(&input_meta.platform.to_lowercase())
-            .with_context(|| format!("Failed to lookup spacecraft config for {input:?}"))?;
+        let input_satid = input_meta.platform.to_lowercase().clone();
+        match config {
+            None => {
+                config = Some(get_config(&input_satid).with_context(|| {
+                    format!("Failed to lookup spacecraft config for {input_satid:?}")
+                })?);
+            }
+            Some(ref cfg) => {
+                if cfg.satellite.id != input_satid {
+                    bail!(
+                        "Cannot aggregate multiple satellites: {} != {}",
+                        cfg.satellite.id,
+                        input_satid
+                    );
+                }
+            }
+        }
+        let config = config.clone().unwrap();
         for output in &extracted_outputs {
             granule_count += 1;
+
+            // lookup product spec for this rdr in config
             info!("extracted {}/{}", output.short_name, output.granule_id);
             let Some(product) = config
                 .products
@@ -69,6 +120,8 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 warn!("no product for short_name {}; skipping", output.short_name);
                 continue;
             };
+
+            // find the granule metadata for this rdr
             let Some(meta) = input_meta
                 .granules
                 .get(&product.short_name.clone())
@@ -82,6 +135,8 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 );
                 continue;
             };
+
+            // record the data we'll need later to write new file
             outputs
                 .entry(output.short_name.clone())
                 .or_default()
@@ -91,7 +146,16 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                     sat: config.satellite.clone(),
                     product: product.clone(),
                 });
+
+            if meta.collection.contains("SCIENCE") {
+                start = Time::from_iet(std::cmp::min(start.iet(), meta.begin_time_iet));
+                end = Time::from_iet(std::cmp::max(end.iet(), meta.end_time_iet));
+            }
+            product_ids.insert(product.product_id.to_string());
         }
+    }
+    if granule_count == 0 {
+        bail!("No RDRs extracted");
     }
     info!(
         "extracted {} extracted granules from {} files",
@@ -99,9 +163,18 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
         inputs.len()
     );
 
-    // All RDRs have been extracted, now shove them into the new file.
-    let file = create_file()?;
-    for (short_name, granules) in outputs.iter() {
+    // Create new file from previously extracted rdrs
+    let (fpath, file) = create_file(
+        &config.unwrap(),
+        &start,
+        &end,
+        &Vec::from_iter(product_ids),
+        &workdir,
+    )?;
+    info!("created {fpath:?}");
+    for (short_name, granules) in outputs.iter_mut() {
+        // granules must be sorted by time
+        granules.sort_unstable_by_key(|item| item.meta.begin_time_iet);
         for (gran_idx, item) in granules.iter().enumerate() {
             let data = std::fs::read(&item.path)?;
             let rdr = Rdr::from_data(&item.sat, &item.product, &item.meta.begin, data)
@@ -111,5 +184,5 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
         }
     }
 
-    Ok("output.h5".into())
+    Ok(fpath)
 }
