@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use hdf5::File;
 use rdr::{
-    config::{get_default, Config, ProductSpec, SatSpec},
+    config::{get_default, Config, ProductSpec},
     write_rdr_granule, GranuleMeta, Meta, Rdr, Time,
 };
 use std::{
@@ -15,7 +15,6 @@ use crate::command_extract::extract;
 struct Item {
     path: PathBuf,
     product: ProductSpec,
-    sat: SatSpec,
     meta: GranuleMeta,
 }
 
@@ -62,6 +61,8 @@ pub fn create_file(
 }
 
 pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<PathBuf> {
+    assert!(!inputs.is_empty());
+
     let workdir = workdir.as_ref().to_path_buf();
     // short_name to RDRs
     let mut outputs: HashMap<String, Vec<Item>> = Default::default();
@@ -88,25 +89,25 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
             }
         };
 
-        let input_meta = Meta::from_file(input)?;
+        let mut input_meta = Meta::from_file(input)?;
         let input_satid = input_meta.platform.to_lowercase().clone();
-        match config {
-            None => {
-                config = Some(get_config(&input_satid).with_context(|| {
-                    format!("Failed to lookup spacecraft config for {input_satid:?}")
-                })?);
-            }
-            Some(ref cfg) => {
-                if cfg.satellite.id != input_satid {
-                    bail!(
-                        "Cannot aggregate multiple satellites: {} != {}",
-                        cfg.satellite.id,
-                        input_satid
-                    );
-                }
-            }
+
+        // Get config for the satellite indicated by the input, otherwise bail
+        if config.is_none() {
+            config = Some(get_config(&input_satid).with_context(|| {
+                format!("Failed to lookup spacecraft config for {input_satid:?}")
+            })?);
         }
-        let config = config.clone().unwrap();
+        let config = config.as_ref().expect("we set config above");
+        // Make sure input satellites match
+        if config.satellite.id != input_satid {
+            bail!(
+                "Cannot aggregate multiple satellites: {} != {}",
+                config.satellite.id,
+                input_satid
+            );
+        }
+
         for output in &extracted_outputs {
             granule_count += 1;
 
@@ -124,8 +125,8 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
             // find the granule metadata for this rdr
             let Some(meta) = input_meta
                 .granules
-                .get(&product.short_name.clone())
-                .unwrap()
+                .entry(product.short_name.clone())
+                .or_default()
                 .iter()
                 .find(|g| g.id == output.granule_id)
             else {
@@ -143,7 +144,6 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 .push(Item {
                     path: output.path.clone(),
                     meta: meta.clone(),
-                    sat: config.satellite.clone(),
                     product: product.clone(),
                 });
 
@@ -165,7 +165,7 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
 
     // Create new file from previously extracted rdrs
     let (fpath, file) = create_file(
-        &config.unwrap(),
+        &config.expect("config should have been determined by inputs"),
         &start,
         &end,
         &Vec::from_iter(product_ids),

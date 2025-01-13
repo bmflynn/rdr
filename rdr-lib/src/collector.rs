@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ccsds::spacepacket::{Apid, Packet, PacketGroup, TimecodeDecoder};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::{
     config::{ProductSpec, RdrSpec, SatSpec},
@@ -74,7 +74,11 @@ impl Collector {
 
         for packed_id in &self.packed_ids {
             let packed_product = self.products.get(packed_id).expect("spec for existing id");
-            let packed_gran_len = i64::try_from(packed_product.gran_len).unwrap();
+            let Ok(packed_gran_len) = i64::try_from(packed_product.gran_len) else {
+                return Err(Error::ConfigInvalid(
+                    "gran_len cannot be convert to i64".to_string(),
+                ));
+            };
 
             for ((_, packed_time), data) in &self.packed {
                 let packed_gran_start = packed_time.iet() as i64;
@@ -181,7 +185,10 @@ impl Collector {
         for (pid, time) in &keys {
             let key = (pid.clone(), time.clone());
             let product = self.products.get(pid).expect("spec for existing id");
-            let data = self.primary.remove(&key).unwrap(); // already verified it exists
+            let data = self
+                .primary
+                .remove(&key)
+                .expect("exists because we created keys above");
             let rdr = Rdr::from_data(&self.sat, product, time, &data)?;
 
             let packed = self.overlapping_packed_rdrs(&rdr)?;
@@ -234,7 +241,11 @@ where
                 "should never get empty packet group"
             );
             let first = &group.packets[0];
-            let time = Time::from_epoch(self.time_decoder.decode(first).unwrap());
+            let Ok(epoch) = self.time_decoder.decode(first) else {
+                warn!("failed to decode time from {:?}", first);
+                return None;
+            };
+            let time = Time::from_epoch(epoch);
 
             for pkt in group.packets {
                 self.cache.push_back((pkt, time.clone()));

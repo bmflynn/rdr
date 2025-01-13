@@ -16,11 +16,12 @@ use tempfile::TempDir;
 use tracing::{debug, error, info, warn};
 
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Option<Config>> {
-    match satellite {
-        Some(satid) => get_default(&satid).context("getting default config"),
-        None => Ok(Some(
-            Config::with_path(&fpath.unwrap()).context("Invalid config")?,
-        )),
+    match (satellite, fpath) {
+        (Some(satid), None) | (Some(satid), Some(_)) => {
+            get_default(&satid).context("getting default config")
+        }
+        (None, Some(fpath)) => Ok(Some(Config::with_path(&fpath).context("Invalid config")?)),
+        (None, None) => bail!("One of satellite or path is required to get config"),
     }
 }
 

@@ -3,7 +3,7 @@ use hdf5::types::FixedAscii;
 use rdr::CommonRdr;
 use std::fs::{write, File};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct ExtractedOutput {
     pub path: PathBuf,
@@ -41,8 +41,16 @@ pub fn extract<I: AsRef<Path>, O: AsRef<Path>>(
             .with_context(|| format!("failed to get {} groups", group.name()))?
         {
             let dataset_path = dataset.name();
+            let short_name = dataset_path
+                .split("/")
+                .nth(2)
+                .unwrap_or_default()
+                .replace("_All", "");
+            if short_name.is_empty() {
+                warn!("failed to parse short name from {dataset_path}");
+                continue;
+            }
             let id = get_granule_id(&file, &dataset_path)?;
-            let short_name = dataset_path.split("/").nth(2).unwrap().replace("_All", "");
 
             if let Some(granule_id) = granule_id.as_ref() {
                 if id != *granule_id {
@@ -55,7 +63,10 @@ pub fn extract<I: AsRef<Path>, O: AsRef<Path>>(
             let arr = dataset
                 .read_1d::<u8>()
                 .with_context(|| format!("reading {}", dataset.name()))?;
-            let data = arr.as_slice().unwrap();
+            let Some(data) = arr.as_slice() else {
+                warn!("invalid array format for {short_name}");
+                continue;
+            };
 
             let common_rdr = CommonRdr::from_bytes(data)?;
             let fpfx = format!("{short_name}_{id}");
@@ -78,8 +89,12 @@ pub fn extract<I: AsRef<Path>, O: AsRef<Path>>(
 }
 
 fn get_granule_id(file: &hdf5::File, dataset_path: &str) -> Result<String> {
-    let gran_num: u64 = dataset_path.split("_").last().unwrap().parse().unwrap();
-    let short_name = dataset_path.split("/").nth(2).unwrap().replace("_All", "");
+    let gran_num: u64 = dataset_path.split("_").last().unwrap_or_default().parse()?;
+    let short_name = dataset_path
+        .split("/")
+        .nth(2)
+        .unwrap_or_default()
+        .replace("_All", "");
     let path = format!("Data_Products/{short_name}/{short_name}_Gran_{gran_num}");
 
     let dataset = file

@@ -5,7 +5,7 @@ mod command_dump;
 mod command_extract;
 mod command_info;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use std::{
     io::{stderr, stdout, Write},
@@ -160,9 +160,15 @@ fn main() -> Result<()> {
             crate::command_dump::dump(&input, true)?;
         }
         Commands::Config { satellite } => {
-            stdout().write_all(get_default_content(&satellite).unwrap().as_bytes())?;
+            let Some(content) = get_default_content(&satellite) else {
+                bail!("no config for {satellite}");
+            };
+            stdout().write_all(content.as_bytes())?;
         }
         Commands::Aggr { inputs, workdir } => {
+            if inputs.is_empty() {
+                bail!("No inputs specified");
+            }
             let workdir = workdir.unwrap_or(std::env::current_dir()?);
             crate::command_aggr::aggreggate(&inputs, workdir)?;
         }

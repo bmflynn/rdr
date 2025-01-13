@@ -143,10 +143,10 @@ pub fn split_spacecraft(fpath: &Path, scid: u8, created: &Time) -> Result<Vec<Pa
     let mut paths: Vec<PathBuf> = Vec::default();
 
     for packet in decode_packets(&File::open(fpath)?) {
-        if let Err(err) = packet {
-            bail!("error while reading packets: {err}");
-        }
-        let packet = packet.unwrap();
+        let packet = match packet {
+            Ok(p) => p,
+            Err(err) => bail!("error while reading packets: {err}"),
+        };
 
         let dest = files.entry(packet.header.apid).or_insert_with(|| {
             let sc_path = fpath.with_file_name(dataset_name(
@@ -187,25 +187,26 @@ pub fn dump(input: &Path, spacecraft: bool) -> Result<()> {
     for group_path in groups {
         debug!("trying to dump {group_path}");
         if let Ok(group) = file.group(&group_path) {
-            let dat_path = dump_group(workdir.path(), scid, &group_path, &group, &created)?;
-            if dat_path.is_none() {
-                warn!("no data found for {group_path}");
-                continue;
-            }
-            let dat_path = dat_path.unwrap();
+            let dat_path = match dump_group(workdir.path(), scid, &group_path, &group, &created)? {
+                Some(p) => p,
+                None => {
+                    warn!("no data found for {group_path}");
+                    continue;
+                }
+            };
 
             if spacecraft && group_path.contains("SPACECRAFT") {
                 debug!("splitting {dat_path:?} into separate spacecraft files");
                 let files = split_spacecraft(&dat_path, scid, &created)
                     .context("splitting spacecraft files")?;
                 for fpath in files {
-                    let dest = fpath.file_name().unwrap();
+                    let dest = fpath.file_name().expect("split files will have names");
                     fs::rename(&fpath, dest)
                         .with_context(|| format!("renaming {dat_path:?} to {dest:?}"))?;
                     info!("wrote {dest:?}");
                 }
             } else {
-                let dest = dat_path.file_name().unwrap();
+                let dest = dat_path.file_name().expect("dumped files will have names");
                 fs::rename(&dat_path, dest)
                     .with_context(|| format!("renaming {dat_path:?} to {dest:?}"))?;
                 info!("wrote {dest:?}");

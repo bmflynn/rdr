@@ -361,8 +361,8 @@ impl AggrMeta {
             count += 1;
         }
 
-        let start_rdr = start_rdr.unwrap();
-        let end_rdr = end_rdr.unwrap();
+        let start_rdr = start_rdr.expect("always set if > 1 rdrs");
+        let end_rdr = end_rdr.expect("always set if > 1 rdrs");
         Self {
             begin_orbit_nubmer: 1,
             end_orbit_number: 1,
@@ -661,8 +661,8 @@ impl StaticHeader {
             satellite: sat.clone(),
             sensor: product.sensor.clone(),
             type_id: product.type_id.clone(),
-            num_apids: u32::try_from(product.apids.len()).unwrap(),
-            apid_list_offset: u32::try_from(Self::LEN).unwrap(),
+            num_apids: u32::try_from(product.apids.len()).expect("invalid number of product apids"),
+            apid_list_offset: u32::try_from(Self::LEN).expect("invalid apid list offset"),
             pkt_tracker_offset: 0,
             ap_storage_offset: 0,
             next_pkt_position: 0,
