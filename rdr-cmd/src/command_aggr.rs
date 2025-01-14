@@ -36,8 +36,8 @@ pub fn create_file(
     let created = Time::now();
     let fname = rdr::filename(
         &config.satellite.id,
-        "dev",
-        "dev",
+        &config.origin,
+        &config.mode,
         &created,
         start,
         end,
@@ -73,7 +73,7 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
     let mut config: Option<Config> = None;
 
     // Extract RDR data to workdir in dirs named for input file names. Collect data necessary to
-    // construct aggregated file.
+    // construct aggregated file in next step.
     for input in inputs {
         let name = input.file_name().expect("should have file name");
 
@@ -157,6 +157,7 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
     if granule_count == 0 {
         bail!("No RDRs extracted");
     }
+
     info!(
         "extracted {} extracted granules from {} files",
         granule_count,
@@ -172,6 +173,8 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
         &workdir,
     )?;
     info!("created {fpath:?}");
+
+    // For each of our extracted RDRs, write it to the file we created
     for (short_name, granules) in outputs.iter_mut() {
         // granules must be sorted by time
         granules.sort_unstable_by_key(|item| item.meta.begin_time_iet);
@@ -186,6 +189,15 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
                 .with_context(|| format!("writing RDR {short_name} granule {gran_idx}"))?;
         }
     }
+    file.close().context("closing h5 file")?;
 
-    Ok(fpath)
+    let fname = fpath.file_name().context("getting file name")?;
+    let mut fdest =
+        std::fs::File::create(fname).with_context(|| format!("creating dest {fname:?}"))?;
+    let mut fsrc =
+        std::fs::File::open(&fpath).with_context(|| format!("opening aggr file {fpath:?}"))?;
+    std::io::copy(&mut fsrc, &mut fdest)
+        .with_context(|| format!("copying {fpath:?} to {fname:?}"))?;
+
+    Ok(fname.into())
 }

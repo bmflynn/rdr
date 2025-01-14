@@ -5,12 +5,13 @@ mod command_dump;
 mod command_extract;
 mod command_info;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::{
     io::{stderr, stdout, Write},
     path::PathBuf,
 };
+use tempfile::TempDir;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -89,11 +90,13 @@ enum Commands {
     },
     /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
     Aggr {
-        /// One or more RDR file to include in the output
+        /// One or more RDR file to include in the output. At least one RDR is required.
         #[arg(value_name = "paths")]
         inputs: Vec<PathBuf>,
-        /// Directory for temporary artifacts
-        #[arg(short, long, default_value = ".")]
+        /// Persistent working directory.
+        ///
+        /// If not specified a temporary directory is used that will be deleted before exit.
+        #[arg(short, long)]
         workdir: Option<PathBuf>,
     },
     /// Deaggregate an aggregated RDR.
@@ -169,8 +172,20 @@ fn main() -> Result<()> {
             if inputs.is_empty() {
                 bail!("No inputs specified");
             }
-            let workdir = workdir.unwrap_or(std::env::current_dir()?);
-            crate::command_aggr::aggreggate(&inputs, workdir)?;
+
+            let mut tmpdir: Option<TempDir> = None;
+            let workdir = match &workdir {
+                Some(p) => p,
+                None => {
+                    tmpdir = Some(TempDir::new().context("creating tempdir")?);
+                    tmpdir.as_ref().unwrap().path()
+                }
+            };
+            let fpath = crate::command_aggr::aggreggate(&inputs, workdir)?;
+            info!("saved {fpath:?}");
+            if let Some(tmpdir) = tmpdir {
+                tmpdir.close().context("removing tmpdir")?;
+            }
         }
         Commands::Deagg { .. } => {
             unimplemented!()

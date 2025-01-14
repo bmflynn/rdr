@@ -90,7 +90,7 @@ pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr
             .cloned()
             .collect::<Vec<Rdr>>();
         let meta = AggrMeta::from_rdrs(&rdrs);
-        write_aggr_dataset(&file, &short_name, &meta)?
+        write_aggr_dataset(&file, &short_name, &meta)?;
     }
 
     Ok(())
@@ -131,6 +131,9 @@ pub fn write_rdr_granule(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<()> 
     Ok(())
 }
 
+/// Write the `/All_Data/<shortname>_All/RawApplicationPackets_<idx>` dataset.
+///
+/// Returns the path of the written dataset.
 fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<String> {
     if file.group("All_Data").is_err() {
         file.create_group("All_Data")?;
@@ -145,7 +148,9 @@ fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<Strin
     Ok(name)
 }
 
-/// Create Data_Products/<shortname> and set attribtes returning group path.
+/// Create Data_Products/<shortname> and set attribtes.
+///
+/// Returns the path to the group written.
 fn write_dataproduct_group(file: &File, meta: &ProductMeta) -> Result<String> {
     if file.group("Data_Products").is_err() {
         file.create_group("Data_Products")?;
@@ -163,6 +168,8 @@ fn write_dataproduct_group(file: &File, meta: &ProductMeta) -> Result<String> {
 }
 
 /// Write attribute data from `meta` to the `Data_Products/<shortname>/<shortname>_Gran_<X>` dataset.
+///
+/// The dataset at `dataset_path` must already exist.
 fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &str) -> Result<()> {
     let dataset = file
         .dataset(dataset_path)
@@ -229,8 +236,10 @@ fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &s
     Ok(())
 }
 
-/// Write the Data_Products/<shortname>/<shortname_Aggr dataset
-fn write_aggr_dataset(file: &File, short_name: &str, meta: &AggrMeta) -> Result<()> {
+/// Write the `Data_Products/<shortname>/<shortname>_Aggr` dataset.
+///
+/// Returns the path to the dataset.
+fn write_aggr_dataset(file: &File, short_name: &str, meta: &AggrMeta) -> Result<String> {
     let group_name = format!("All_Data/{}_All", short_name);
     if file.group(&group_name).is_err() {
         file.create_group(&group_name)?;
@@ -292,5 +301,5 @@ fn write_aggr_dataset(file: &File, short_name: &str, meta: &AggrMeta) -> Result<
         meta.end_granule_id.to_string(),
         20
     );
-    Ok(())
+    Ok(dataset_path)
 }
