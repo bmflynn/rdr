@@ -173,6 +173,8 @@ pub(crate) fn create_dataproducts_gran_dataset(
 /// to the group in All_Data/<shortname>_All.
 ///
 /// This only creates the dataset, not any required attributes.
+///
+/// Returns the h5 path to the aggr dataset.
 pub(crate) fn create_dataproducts_aggr_dataset(
     file: &File,
     short_name: &str,

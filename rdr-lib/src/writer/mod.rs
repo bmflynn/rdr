@@ -17,52 +17,47 @@ use crate::{
     AggrMeta, GranuleMeta, Meta, ProductMeta, Time,
 };
 
-macro_rules! try_h5 {
-    ($obj:expr, $msg:expr) => {
-        $obj.map_err(|e| Error::Hdf5Sys(format!("{}: {}", $msg.to_string(), e)))
-    };
-}
-
 /// Write a string attr with specific len with shape [1, 1]
 macro_rules! wattstr {
     ($obj:expr, $name:expr, $value:expr, $maxlen:expr) => {
-        try_h5!(
-            $obj.new_attr_builder()
-                .with_data::<'_, _, _, Dim<[usize; 2]>>(&arr2(&[[
-                    FixedAscii::<$maxlen>::from_ascii(
-                        &(($value.clone())[..std::cmp::min($maxlen, $value.len())]),
-                    )
-                    .map_err(|e| {
-                        Error::Hdf5Sys(format!(
-                            "creating ascii value {} for {}: {e}",
-                            $name, $value
-                        ))
-                    })?
-                ]]))
-                .create($name),
-            format!("writing str attr {} value {}", $name, $value)
-        )?;
+        $obj.new_attr_builder()
+            .with_data::<'_, _, _, Dim<[usize; 2]>>(&arr2(&[[FixedAscii::<$maxlen>::from_ascii(
+                &(($value.clone())[..std::cmp::min($maxlen, $value.len())]),
+            )
+            .map_err(|e| {
+                Error::Hdf5Other(format!(
+                    "creating ascii value {} for {}: {e}",
+                    $name, $value
+                ))
+            })?]]))
+            .create($name)
+            .map_err(|e| {
+                Error::Hdf5Other(format!(
+                    "creating ascii value {} for {}: {e}",
+                    $name, $value
+                ))
+            })?
     };
 }
 
 /// Write a u64 attr
 macro_rules! wattnum {
     ($obj:expr, $ty:ty, $name:expr, $value:expr) => {
-        try_h5!(
-            $obj.new_attr_builder()
-                .with_data::<'_, _, $ty, Dim<[usize; 2]>>(&arr2(&[[$value]]))
-                .create($name),
-            format!("creating numeric attr {} value={}", $name, $value)
-        )?
+        $obj.new_attr_builder()
+            .with_data::<'_, _, $ty, Dim<[usize; 2]>>(&arr2(&[[$value]]))
+            .create($name)
+            .map_err(|e| {
+                Error::Hdf5Other(format!(
+                    "creating numeric attr {} value={}: {e}",
+                    $name, $value
+                ))
+            })?
     };
 }
 
 /// Write a JPSS H5 RDR file from the provided RDR metadata and granule data.
 pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr]) -> Result<()> {
-    let file = try_h5!(
-        File::create(&fpath),
-        format!("creating {:?}", fpath.as_ref().to_path_buf())
-    )?;
+    let file = File::create(&fpath)?;
 
     write_rdr_meta(
         &file,
@@ -73,8 +68,9 @@ pub fn create_rdr<P: AsRef<Path> + fmt::Debug>(fpath: P, meta: Meta, rdrs: &[Rdr
         &meta.created,
     )?;
 
-    try_h5!(file.create_group("All_Data"), "creating All_Data")?;
-    try_h5!(file.create_group("Data_Products"), "creating Data_Products")?;
+    // Make sure top-level required groups exist
+    file.create_group("All_Data")?;
+    file.create_group("Data_Products")?;
 
     // Write RDR granule datasets (All_Data, Data_Products)
     let mut short_names: HashSet<String> = HashSet::default();
@@ -122,13 +118,14 @@ pub fn write_rdr_granule(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<()> 
     let product_meta = ProductMeta::from_rdr(rdr);
     write_dataproduct_group(file, &product_meta)?;
 
-    let dataset_path = try_h5!(
-        create_dataproducts_gran_dataset(file, &rdr.meta.collection, &rawdata_path),
-        format!(
-            "creating {} rdr {gran_idx} {rawdata_path}",
-            rdr.meta.collection
-        )
-    )?;
+    let dataset_path = create_dataproducts_gran_dataset(file, &rdr.meta.collection, &rawdata_path)
+        .map_err(|e| {
+            Error::Hdf5Sys(format!(
+                "creating {} rdr {gran_idx} {rawdata_path}: {e}",
+                rdr.meta.collection
+            ))
+        })?;
+
     write_product_dataset_attrs(file, &rdr.meta, &dataset_path)?;
 
     Ok(())
@@ -136,29 +133,26 @@ pub fn write_rdr_granule(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<()> 
 
 fn write_rdr_to_alldata(file: &File, gran_idx: usize, rdr: &Rdr) -> Result<String> {
     if file.group("All_Data").is_err() {
-        try_h5!(file.create_group("All_Data"), "creating All_Data")?;
+        file.create_group("All_Data")?;
     }
     let name = format!(
         "/All_Data/{}_All/RawApplicationPackets_{gran_idx}",
         rdr.meta.collection
     );
-    try_h5!(
-        file.new_dataset_builder()
-            .with_data(&arr1(&rdr.data))
-            .create(name.clone().as_str()),
-        format!("creating dataset {name}")
-    )?;
+    file.new_dataset_builder()
+        .with_data(&arr1(&rdr.data))
+        .create(name.clone().as_str())?;
     Ok(name)
 }
 
 /// Create Data_Products/<shortname> and set attribtes returning group path.
 fn write_dataproduct_group(file: &File, meta: &ProductMeta) -> Result<String> {
+    if file.group("Data_Products").is_err() {
+        file.create_group("Data_Products")?;
+    }
     let group_name = format!("Data_Products/{}", meta.collection);
     if file.group(&group_name).is_err() {
-        let group = try_h5!(
-            file.create_group(&group_name),
-            format!("creating group {group_name}")
-        )?;
+        let group = file.create_group(&group_name)?;
 
         wattstr!(group, "Instrument_Short_Name", meta.instrument, 10);
         wattstr!(group, "N_Collection_Short_Name", meta.collection, 20);
@@ -168,7 +162,7 @@ fn write_dataproduct_group(file: &File, meta: &ProductMeta) -> Result<String> {
     Ok(group_name)
 }
 
-/// Write required attributes for Data_Products/<shortname>/<shortname>_Gran_<X> dataset.
+/// Write attribute data from `meta` to the `Data_Products/<shortname>/<shortname>_Gran_<X>` dataset.
 fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &str) -> Result<()> {
     let dataset = file
         .dataset(dataset_path)
@@ -196,45 +190,41 @@ fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &s
     let mut pkt_type_arr: Vec<[FixedAscii<17>; 1]> = Vec::default();
     let mut pkt_type_cnt_arr: Vec<u64> = Vec::default();
     for (name, count) in meta.packet_type.iter().zip(&meta.packet_type_count) {
-        let ascii = try_h5!(
-            FixedAscii::<17>::from_ascii(name.as_bytes()),
-            format!("creating packet type attr ascii for {name}")
-        )?;
+        let ascii = FixedAscii::<17>::from_ascii(name.as_bytes()).map_err(|e| {
+            Error::Hdf5Other(format!("creating packet type attr ascii for {name}: {e}"))
+        })?;
         pkt_type_arr.push([ascii]);
         pkt_type_cnt_arr.push(u64::from(*count));
     }
 
     // Write N_Packet_Type
     let name = "N_Packet_Type";
-    let attr = try_h5!(
-        dataset
-            .new_attr::<FixedAscii<17>>()
-            .shape([pkt_type_arr.len(), 1])
-            .create(name),
-        format!("creating packet type attr ascii for {name}")
-    )?;
+    let attr = dataset
+        .new_attr::<FixedAscii<17>>()
+        .shape([pkt_type_arr.len(), 1])
+        .create(name)
+        .map_err(|e| Error::Hdf5Other(format!("creating attr N_Packet_Type for {name}: {e}")))?;
     let arr = ndarray::arr2(&pkt_type_arr);
-    try_h5!(attr.write(&arr), "writing packet type attr")?;
+    attr.write(&arr)
+        .map_err(|e| Error::Hdf5Other(format!("writing N_Packet_Type for {name}: {e}")))?;
 
     let name = "N_Packet_Type_Count";
-    let attr = try_h5!(
-        dataset
-            .new_attr::<u64>()
-            .shape([pkt_type_cnt_arr.len(), 1])
-            .create(name),
-        "creating packet type count attr"
-    )?;
-    try_h5!(
-        attr.write_raw(&pkt_type_cnt_arr),
-        "writing packet type count attr"
-    )?;
+    let attr = dataset
+        .new_attr::<u64>()
+        .shape([pkt_type_cnt_arr.len(), 1])
+        .create(name)
+        .map_err(|e| Error::Hdf5Other(format!("creating attr N_Packet_Count for {name}: {e}")))?;
+    attr.write_raw(&pkt_type_cnt_arr)
+        .map_err(|e| Error::Hdf5Other(format!("writing N_Packet_Count for {name}: {e}")))?;
 
     let (name, val) = ("N_Percent_Missing_Data", meta.percent_missing);
-    let attr = try_h5!(
-        dataset.new_attr::<f32>().shape([1, 1]).create(name),
-        format!("creating {name} attr")
-    )?;
-    try_h5!(attr.write_raw(&[val]), format!("writing {name} attr"))?;
+    let attr = dataset
+        .new_attr::<f32>()
+        .shape([1, 1])
+        .create(name)
+        .map_err(|e| Error::Hdf5Other(format!("creating attr {name}: {e}")))?;
+    attr.write_raw(&[val])
+        .map_err(|e| Error::Hdf5Other(format!("writing attr {name}: {e}")))?;
 
     Ok(())
 }
@@ -243,20 +233,14 @@ fn write_product_dataset_attrs(file: &File, meta: &GranuleMeta, dataset_path: &s
 fn write_aggr_dataset(file: &File, short_name: &str, meta: &AggrMeta) -> Result<()> {
     let group_name = format!("All_Data/{}_All", short_name);
     if file.group(&group_name).is_err() {
-        try_h5!(
-            file.create_group(&group_name),
-            format!("creating group {group_name}")
-        )?;
+        file.create_group(&group_name)?;
     }
 
-    let dataset_path = try_h5!(
-        create_dataproducts_aggr_dataset(file, short_name),
-        format!("creating aggr dataset for {short_name}")
-    )?;
-    let dataset = try_h5!(
-        file.dataset(&dataset_path),
-        format!("opening dataset {dataset_path}")
-    )?;
+    let dataset_path = create_dataproducts_aggr_dataset(file, short_name)
+        .map_err(|e| Error::Hdf5Sys(format!("creating aggr dataset for {short_name}: {e}")))?;
+    let dataset = file
+        .dataset(&dataset_path)
+        .map_err(|e| Error::Hdf5Other(format!("opening dataset {dataset_path}: {e}")))?;
 
     wattnum!(
         dataset,
