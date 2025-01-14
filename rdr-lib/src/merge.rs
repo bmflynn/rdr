@@ -3,6 +3,9 @@ use std::{io::Write, path::PathBuf};
 use ccsds::spacepacket::{Merger, TimecodeDecoder};
 use ccsds::Result;
 
+/// Merge JPSS spacepacket files into `writer`.
+///
+/// The merged output will be sorted by time and apid.
 pub fn jpss_merge<W: Write>(files: &[PathBuf], writer: W) -> Result<()> {
     let time_decoder = TimecodeDecoder::new(ccsds::timecode::Format::Cds {
         num_day: 2,

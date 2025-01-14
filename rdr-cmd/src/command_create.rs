@@ -3,10 +3,10 @@ use ccsds::spacepacket::{collect_groups, decode_packets, PacketGroup};
 use crossbeam::channel;
 use rdr::{
     config::{get_default, Config},
-    jpss_merge, Collector, Meta, PacketTimeIter, Time,
+    jpss_merge, Collector, Meta, PacketTimeIter, Rdr, Time,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{create_dir, File},
     io::{BufReader, BufWriter},
     path::{Path, PathBuf},
@@ -23,6 +23,26 @@ fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Optio
         (None, Some(fpath)) => Ok(Some(Config::with_path(&fpath).context("Invalid config")?)),
         (None, None) => bail!("One of satellite or path is required to get config"),
     }
+}
+
+pub fn rdr_filename_meta(rdrs: &[Rdr]) -> (Time, Time, Vec<String>) {
+    assert!(!rdrs.is_empty());
+    let mut start = Time::now().iet();
+    let mut end = 0;
+    let mut product_ids: HashSet<String> = HashSet::default();
+    for rdr in rdrs {
+        // Only science types determine file time. There should only be one science type but we
+        // leave that to the caller and just compute times based on all science types.
+        if rdr.meta.collection.contains("SCIENCE") {
+            start = std::cmp::min(start, rdr.meta.begin_time_iet);
+            end = std::cmp::max(end, rdr.meta.end_time_iet);
+        }
+        product_ids.insert(rdr.product_id.to_string());
+    }
+    let mut product_ids = Vec::from_iter(product_ids);
+    product_ids.sort();
+
+    (Time::from_iet(start), Time::from_iet(end), product_ids)
 }
 
 pub fn create_rdr<P>(config: &Config, packet_groups: P, dest: &Path) -> Result<()>
@@ -68,7 +88,7 @@ where
         s.spawn(move || {
             let created = Time::now();
             for rdrs in rx {
-                let (start, end, pids) = rdr::rdr_filename_meta(&rdrs);
+                let (start, end, pids) = rdr_filename_meta(&rdrs);
                 let fpath = dest.join(rdr::filename(
                     &config.satellite.id,
                     &config.origin,

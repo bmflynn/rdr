@@ -2,13 +2,14 @@ use ccsds::spacepacket::{Apid, Packet};
 use hdf5::{types::FixedAscii, Dataset, Group};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fmt::Display,
     path::Path,
 };
 use tracing::{debug, trace};
 
 use crate::{
+    config::get_default,
     error::{Error, RdrError, Result},
     Time,
 };
@@ -79,8 +80,7 @@ pub fn granule_id(sat_short_name: &str, base_time: u64, rdr_iet: u64) -> Result<
     Ok(format!("{}{:012}", sat_short_name.to_uppercase(), t))
 }
 
-/// Data structure for collection neccessary metadata and data necessary to write a single
-/// [CommonRdr] to an RDR file.
+/// [RdrData] compiled into metadata and raw data for a single RDR.
 #[derive(Clone, Debug)]
 pub struct Rdr {
     /// Standard RDR granule metadata.
@@ -91,28 +91,26 @@ pub struct Rdr {
 }
 
 impl Rdr {
-    /// Create a new empty RDR.
-    ///
-    /// # Errors
-    /// If the time is not valid for the given specs
-    pub fn new(sat: &SatSpec, product: &ProductSpec, time: &Time) -> Result<Self> {
-        Ok(Self {
-            meta: GranuleMeta::new(time.clone(), sat, product)?,
-            product_id: product.product_id.to_string(),
-            data: vec![],
-        })
-    }
-
-    pub fn from_data(
-        sat: &SatSpec,
-        product: &ProductSpec,
-        time: &Time,
-        data: &RdrData,
-    ) -> Result<Self> {
-        let mut meta = GranuleMeta::new(time.clone(), sat, product)?;
+    pub(crate) fn from_data(rdr_data: &RdrData, data: Vec<u8>) -> Result<Self> {
+        let satid = rdr_data.header.satellite.to_lowercase().to_string();
+        let Some(config) = get_default(&satid)? else {
+            return Err(Error::ConfigNotFound(satid));
+        };
+        let Some(product) = config
+            .products
+            .iter()
+            .find(|p| p.short_name == rdr_data.short_name)
+        else {
+            return Err(Error::ConfigNotFound(format!(
+                "product {}",
+                rdr_data.short_name
+            )));
+        };
+        let time = Time::from_iet(rdr_data.header.start_boundary);
+        let mut meta = GranuleMeta::new(time, &config.satellite, product)?;
         let mut names: Vec<String> = Vec::default();
         let mut counts: Vec<u32> = Vec::default();
-        for a in data.apid_list.values() {
+        for a in rdr_data.apid_list.values() {
             names.push(a.name.to_string());
             counts.push(a.pkts_received);
         }
@@ -121,12 +119,12 @@ impl Rdr {
         Ok(Self {
             meta,
             product_id: product.product_id.to_string(),
-            data: data.compile()?,
+            data,
         })
     }
 }
 
-/// Collects metadata and packets into a common RDR structures.
+/// Used to collect packets for a single Common RDR.
 #[derive(Debug, Clone)]
 pub struct RdrData {
     pub short_name: String,
@@ -184,11 +182,11 @@ impl RdrData {
         Ok(())
     }
 
-    /// Create an [Rdr] from the current builder state.
+    /// Create bytes for a Common RDR from the current state.
     ///
     /// # Panics
     /// If structure counts overflow rdr structure types
-    pub fn compile(&self) -> Result<Vec<u8>> {
+    pub fn compile(&self) -> Result<Rdr> {
         let mut apids = self.apid_list.keys().collect::<Vec<_>>();
         apids.sort_unstable();
         let mut apid_list = self.apid_list.clone();
@@ -243,7 +241,7 @@ impl RdrData {
             data.extend_from_slice(&pkt.data);
         }
 
-        Ok(data)
+        Rdr::from_data(self, data)
     }
 }
 
@@ -253,8 +251,8 @@ impl Display for Rdr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Rdr{{product={} time={}T{}}}",
-            self.meta.collection, self.meta.begin_date, self.meta.begin_time,
+            "Rdr{{product={} time={:?}}}",
+            self.meta.collection, self.meta.begin
         )
     }
 }
@@ -274,25 +272,6 @@ macro_rules! attr_u64 {
             .read_2d::<u64>()
             .map_err(|e| Error::Hdf5Other(format!("reading u64 attr {}: {}", $name, e)))?[[0, 0]]
     };
-}
-
-pub fn rdr_filename_meta(rdrs: &[Rdr]) -> (Time, Time, Vec<String>) {
-    let mut start = Time::now().iet();
-    let mut end = 0;
-    let mut product_ids: HashSet<String> = HashSet::default();
-    for rdr in rdrs {
-        // Only science types determine file time. There should only be one science type but we
-        // leave that to the caller and just compute times based on all science types.
-        if rdr.meta.collection.contains("SCIENCE") {
-            start = std::cmp::min(start, rdr.meta.begin_time_iet);
-            end = std::cmp::max(end, rdr.meta.end_time_iet);
-        }
-        product_ids.insert(rdr.product_id.to_string());
-    }
-    let mut product_ids = Vec::from_iter(product_ids);
-    product_ids.sort();
-
-    (Time::from_iet(start), Time::from_iet(end), product_ids)
 }
 
 /// Create an IDPS style RDR filename
@@ -319,15 +298,16 @@ pub fn filename(
     )
 }
 
-pub fn attr_date(dt: &Time) -> String {
+pub(crate) fn attr_date(dt: &Time) -> String {
     dt.format_utc("%Y%m%d")
 }
 
-pub fn attr_time(dt: &Time) -> String {
+pub(crate) fn attr_time(dt: &Time) -> String {
     // Avoid floating point rouding issues by just rendering micros directly
     format!("{}.{}Z", dt.format_utc("%H%M%S"), dt.iet() % 1_000_000)
 }
 
+/// Aggregation metadata for the `/Data_Products/<short_name>/<shortname>_Aggr` dataset.
 #[derive(Debug, Clone, Serialize)]
 pub struct AggrMeta {
     pub begin_orbit_nubmer: u32,
@@ -378,7 +358,7 @@ impl AggrMeta {
 }
 
 /// Metadata associated with a particular granule dataset from RDR path
-/// /Data_Products/<collection>/<dataset>_Gran_<x>.
+/// `/Data_Products/<shortname>/<shortname>_Gran_<idx>`.
 #[derive(Debug, Clone, Serialize)]
 pub struct GranuleMeta {
     pub instrument: String,
@@ -508,7 +488,7 @@ impl GranuleMeta {
 }
 
 /// Metadata associated with a particular product group from RDR path
-/// /Data_Products/<collection>
+/// `/Data_Products/<shortname>`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProductMeta {
     pub instrument: String,
@@ -549,8 +529,7 @@ impl ProductMeta {
     }
 }
 
-/// RDR metadata generally representing the metadata (attributes) available
-/// in a HDF5 file.
+/// RDR metadata generally representing the global RDR metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct Meta {
     pub distributor: String,
@@ -637,6 +616,7 @@ impl Meta {
     }
 }
 
+/// Common RDR static header
 #[derive(Debug, Default, Clone, Serialize, PartialEq)]
 pub struct StaticHeader {
     pub satellite: String, // 4-bytes
@@ -709,7 +689,7 @@ impl StaticHeader {
     }
 }
 
-/// Entry in the APID List.
+/// Single Common RDR APID list entry.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ApidInfo {
     pub name: String,
@@ -767,6 +747,7 @@ impl ApidInfo {
     }
 }
 
+/// Single entry of the Common RDR packet tracker list.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PacketTracker {
     /// Observation time as IET microseconds
@@ -811,10 +792,8 @@ impl PacketTracker {
     }
 }
 
-/// The JPSS Common RDR data structures.
+/// The JPSS Common RDR metadata structures; does not include packet data.
 ///
-/// See: JPSS CDFCB Vol II - RDR Formats. Unfortunatley, this document is not generally available
-/// for download.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommonRdr {
     pub static_header: StaticHeader,

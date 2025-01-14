@@ -86,12 +86,14 @@ impl Collector {
                 if packed_gran_start > primary_gran_start - packed_gran_len
                     && packed_gran_start < primary_gran_end
                 {
-                    packed.push(Rdr::from_data(
-                        &self.sat,
-                        packed_product,
-                        packed_time,
-                        data,
-                    )?);
+                    let rdr = match data.compile() {
+                        Ok(r) => r,
+                        Err(err) => {
+                            warn!("failed to compile rdr data: {err}");
+                            continue;
+                        }
+                    };
+                    packed.push(rdr);
                 }
             }
         }
@@ -152,8 +154,13 @@ impl Collector {
                 Time::from_iet(gran_time.iet() - product.gran_len * 2),
             );
             if let Some(data) = self.primary.remove(&second_to_last_key) {
-                let complete_time = second_to_last_key.1;
-                let rdr = Rdr::from_data(&self.sat, product, &complete_time, &data)?;
+                let rdr = match data.compile() {
+                    Ok(r) => r,
+                    Err(err) => {
+                        warn!("failed to compile rdr data: {err}");
+                        return Ok(None);
+                    }
+                };
                 let packed = self.overlapping_packed_rdrs(&rdr)?;
                 let mut rdrs = vec![rdr];
                 rdrs.extend_from_slice(&packed);
@@ -184,12 +191,17 @@ impl Collector {
         let mut finished = Vec::default();
         for (pid, time) in &keys {
             let key = (pid.clone(), time.clone());
-            let product = self.products.get(pid).expect("spec for existing id");
             let data = self
                 .primary
                 .remove(&key)
                 .expect("exists because we created keys above");
-            let rdr = Rdr::from_data(&self.sat, product, time, &data)?;
+            let rdr = match data.compile() {
+                Ok(r) => r,
+                Err(err) => {
+                    warn!("failed to compile rdr data: {err}");
+                    continue;
+                }
+            };
 
             let packed = self.overlapping_packed_rdrs(&rdr)?;
             let mut rdrs = vec![rdr];

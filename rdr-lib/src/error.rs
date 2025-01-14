@@ -40,6 +40,8 @@ pub enum Error {
         #[from]
         source: serde_yaml::Error,
     },
+    #[error("No config for {0}")]
+    ConfigNotFound(String),
 
     #[error(transparent)]
     RdrError(#[from] RdrError),
