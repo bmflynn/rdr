@@ -138,6 +138,8 @@ dependencies = [
 [[package]]
 name = "ccsds"
 version = "0.1.0-beta.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e25003f91741fe28d7be6da4e372844a1e1ff6fe0f21944cca136661ae2c17d9"
 dependencies = [
  "crossbeam",
  "hifitime",
@@ -826,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "rdr"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 dependencies = [
  "ccsds",
  "glob",
@@ -843,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "rdr-cmd"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 dependencies = [
  "anyhow",
  "ccsds",

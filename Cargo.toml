@@ -4,7 +4,7 @@ members = ["rdr-lib", "rdr-cmd"]
 default-members = ["rdr-lib", "rdr-cmd"]
 
 [workspace.package]
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2021"
 description = "JPSS HDF5 Raw-Data-Record (RDR) Utilities"
 authors = ["Bruce Flynn <brucef@ssec.wisc.edu>"]
@@ -12,7 +12,7 @@ repository = "https://github.com/bmflynn/rdr"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-ccsds = { path = "../ccsds-rs/ccsds-lib" }
+ccsds = "0.1.0-beta.21"
 hifitime = "4.0.1"
 hdf5 = { version = "0.8.1" }
 hdf5-sys = { version = "0.8.1", features = ["static"] }
