@@ -28,6 +28,11 @@ fn version() -> &'static str {
 
 /// Tool for manipulating JPSS RDR HDF5 files.
 ///
+/// NOTE: VIIRS, CRIS, ATMS SCIENCE and SPACECRAFT data are well supported, however, support for
+///     OMPS, CERES, and non-SCIENCE types is a bit more sparse. If you have a need to support one
+///     these types you please create a new issue or comment on an existing one at the project URL
+///     below.
+///
 /// Repository: <https://github.com/bmflynn/rdr>
 #[derive(Parser)]
 #[command(version=version(), about, long_about, disable_help_subcommand = true)]
@@ -68,7 +73,7 @@ enum Commands {
     ///
     /// The default configuration should be good for most cases, but if you want to try your
     /// luck at modifying the default configuration or adding support for a new spacecraft you can
-    /// start by dumping the provided default configuration using the config sub-command and
+    /// start by dumping the provided default configuration using the `config` sub-command and
     /// modify from there.
     Create {
         #[command(flatten)]
@@ -78,17 +83,21 @@ enum Commands {
         #[arg(short, long, value_name = "path", default_value = "output")]
         output: PathBuf,
 
-        /// One or more packet data file. The packet data must be sorted in time and sequence id order.
+        /// One or more packet data file.
+        ///
+        /// The input will be merged before processing and need not be in any particular order.
         #[arg(value_name = "path")]
         input: Vec<PathBuf>,
     },
-    /// Extract the spacepacket data contained in the RDR.
+    /// Extract raw spacepacket data to Level-0 PDS files.
+    ///
+    /// Level-0 PDS files will follow the NASA Level-0 naming conventions.
     Dump {
         /// RDR file to dump
         #[arg(value_name = "path")]
         input: PathBuf,
     },
-    /// Aggregate multiple non-aggregated RDRs into a single aggregated RDR.
+    /// Aggregate multiple RDRs into a single aggregated RDR.
     Aggr {
         /// One or more RDR file to include in the output. At least one RDR is required.
         #[arg(value_name = "paths")]
@@ -100,6 +109,9 @@ enum Commands {
         workdir: Option<PathBuf>,
     },
     /// Deaggregate an aggregated RDR.
+    ///
+    /// Produces a new single RDR for each contained SCIENCE data product packed with all
+    /// overlapping SPACECRAFT data.
     #[command(hide = true)]
     Deagg {
         /// RDR file to deaggregate into native resolution RDRs.

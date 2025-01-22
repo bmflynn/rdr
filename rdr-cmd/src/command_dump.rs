@@ -18,6 +18,9 @@ enum DatasetType<'a> {
     Spacecraft(u16),
 }
 
+// TODO:
+//  * Determine what OMPS L0 files should look like
+//  * Support DIAG, HK, DWELL, etc ...
 fn dataset_name(scid: u8, type_: &DatasetType, created: &Time) -> String {
     let dstr = created.format_utc("%y%j%H%M%S");
     match type_ {
