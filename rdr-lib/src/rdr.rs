@@ -861,7 +861,10 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name);
-        assert!(path.exists(), "fixture path '{path:?}' does not exist");
+        assert!(
+            path.exists(),
+            "fixture path '{path:?}' does not exist; have you run ./scripts/fetch_testdata.sh?"
+        );
         path
     }
 

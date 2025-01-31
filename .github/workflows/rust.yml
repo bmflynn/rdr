@@ -15,13 +15,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Install HDF5 
-      run: sudo apt install -y libhdf5-dev
+    - name: Update package index
+      run: sudo apt -y update
+    - name: Install packages
+      run: sudo apt -y install libhdf5-dev curl
     - uses: actions/checkout@v4
       with:
         lfs: true
     - name: Checkout LFS objects
       run: git lfs checkout
+    - name: Download Testdata
+      run: ./scripts/fetch_testdata.sh
     - name: Build
       run: cargo build --verbose
     - name: Run tests
