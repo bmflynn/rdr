@@ -92,7 +92,7 @@ enum Commands {
         #[arg(value_name = "path")]
         input: Vec<PathBuf>,
     },
-    /// Extract raw spacepacket data to Level-0 PDS files.
+    /// Dump raw spacepacket data to Level-0 PDS files.
     ///
     /// Level-0 PDS files will follow the NASA Level-0 naming conventions.
     Dump {
@@ -138,8 +138,8 @@ enum Commands {
     },
     /// Extracts Common RDR metadata and data structures.
     ///
-    /// This will produce a JSON metadata file of the group and dataset attributes and a raw data
-    /// file RDR granule datasets in the file.
+    /// This will produce a JSON file containing the RDR data structure metadata, i.e., everything
+    /// but the AP storage, and a data file containing all of the Common RDR structure raw data.
     Extract {
         #[arg(value_name = "path")]
         input: PathBuf,
