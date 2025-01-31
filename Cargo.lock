@@ -137,9 +137,9 @@ dependencies = [
 
 [[package]]
 name = "ccsds"
-version = "0.1.0-beta.21"
+version = "0.1.0-beta.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e25003f91741fe28d7be6da4e372844a1e1ff6fe0f21944cca136661ae2c17d9"
+checksum = "426bd14e8dad3cfe6ca0b0298542203a77cc9c6ef134b712e5219727fe4af08a"
 dependencies = [
  "crossbeam",
  "hifitime",

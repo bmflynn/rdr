@@ -20,6 +20,9 @@ use rdr::config::get_default_content;
 fn version() -> &'static str {
     concat!(
         env!("CARGO_PKG_VERSION"),
+        " (git_sha:",
+        env!("GIT_SHA"),
+        ")",
         " (hdf5:",
         env!("H5_VERSION"),
         ")"
