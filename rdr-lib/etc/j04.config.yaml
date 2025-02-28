@@ -3,10 +3,10 @@ mode: dev
 distributor: local
 
 satellite:
-  id: j03
-  short_name: J03
+  id: j04
+  short_name: J04
   base_time: 1698019234000000
-  mission: JPSS-3/JPSS
+  mission: JPSS-4/JPSS
 
 rdrs:
   - product: RVIRS

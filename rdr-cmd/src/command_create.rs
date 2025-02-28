@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ccsds::spacepacket::{collect_groups, decode_packets, PacketGroup};
 use crossbeam::channel;
 use rdr::{
@@ -18,7 +18,7 @@ use tracing::{debug, error, info, warn};
 fn get_config(satellite: Option<String>, fpath: Option<PathBuf>) -> Result<Option<Config>> {
     match (satellite, fpath) {
         (Some(satid), None) | (Some(satid), Some(_)) => {
-            get_default(&satid).context("getting default config")
+            Ok(get_default(&satid).map_err(|err| anyhow!("getting default config: {err}"))?)
         }
         (None, Some(fpath)) => Ok(Some(Config::with_path(&fpath).context("Invalid config")?)),
         (None, None) => bail!("One of satellite or path is required to get config"),
