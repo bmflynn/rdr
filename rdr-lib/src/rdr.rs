@@ -93,7 +93,7 @@ pub struct Rdr {
 impl Rdr {
     pub(crate) fn from_data(rdr_data: &RdrData, data: Vec<u8>) -> Result<Self> {
         let satid = rdr_data.header.satellite.to_lowercase().to_string();
-        let Some(config) = get_default(&satid)? else {
+        let Some(config) = get_default(&satid) else {
             return Err(Error::ConfigNotFound(satid));
         };
         let Some(product) = config

@@ -128,20 +128,24 @@ static NPP_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/npp.config.yam
 static J01_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j01.config.yaml"));
 static J02_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j02.config.yaml"));
 static J03_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j03.config.yaml"));
+static J04_CONFIG: &str = include_str!(concat!(env!("OUT_DIR"), "/j04.config.yaml"));
 
+/// Get default YAML configuration content for `satid`.
 pub fn get_default_content(satid: &str) -> Option<&'static str> {
     match satid {
         "npp" => Some(NPP_CONFIG),
         "j01" => Some(J01_CONFIG),
         "j02" => Some(J02_CONFIG),
         "j03" => Some(J03_CONFIG),
+        "j04" => Some(J04_CONFIG),
         _ => None,
     }
 }
 
-pub fn get_default(satid: &str) -> Result<Option<Config>> {
-    match get_default_content(satid) {
-        Some(cfg) => Ok(Some(Config::with_data(cfg)?)),
-        None => Ok(None),
-    }
+/// Get default [Config] for `satid`, or `None` if `satid` is unknown.
+///
+/// # Panics
+/// If the build-in RDR configuration is not valid.
+pub fn get_default(satid: &str) -> Option<Config> {
+    Some(Config::with_data(get_default_content(satid)?).expect("invalid built-in RDR config"))
 }

@@ -153,7 +153,7 @@ products:
   - product_id: RATMS
     short_name: ATMS-SCIENCE-RDR
     type_id: SCIENCE
-	  gran_len: 31997000
+    gran_len: 31997000
     sensor: ATMS
     apids:
       - { "num": 515, "name": "CAL", "max_expected": 1 }
@@ -161,32 +161,30 @@ products:
       - { "num": 530, "name": "ENG_TEMP", "max_expected": 1 }
       - { "num": 531, "name": "ENG_HS", "max_expected": 1 }
 
-  - product_id: RONPS 
+  - product_id: RONPS
     short_name: OMPS-NPSCIENCE-RDR
     type_id: SCIENCE
-	<granule csn="OMPS-NPSCIENCE-RDR" length=""/>
-	  gran_len: 37405000
+    gran_len: 37405000
     sensor: OMPS-NP
     apids:
-      - { "num": 561 , "name": "NP", "max_expected": 256 }
+      - { "num": 561, "name": "NP", "max_expected": 256 }
 
   - product_id: ROTCS
     short_name: OMPS-TCSCIENCE-RDR
     type_id: SCIENCE
-	  gran_len: 37405000
+    gran_len: 37405000
     sensor: OMPS-TC
     apids:
-      - { "num": 564 , "name": "NTC", "max_expected": 256 }
+      - { "num": 564, "name": "NTC", "max_expected": 256 }
 
-  - product_id: ROLPS 
+  - product_id: ROLPS
     short_name: OMPS-LPSCIENCE-RDR
     type_id: SCIENCE
-	  gran_len: 37437000
+    gran_len: 37437000
     sensor: OMPS-LP
     apids:
-      - { "num": 562 , "name": "LP1", "max_expected": 1 }
-      - { "num": 563 , "name": "LP2", "max_expected": 1 }
-
+      - { "num": 562, "name": "LP1", "max_expected": 1 }
+      - { "num": 563, "name": "LP2", "max_expected": 1 }
 
   - product_id: RNSCA
     primary: false

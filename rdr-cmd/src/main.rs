@@ -49,7 +49,7 @@ struct Cli {
 }
 
 fn parse_valid_satellite(sat: &str) -> Result<String, String> {
-    let valid_satellites = ["npp", "j01", "j02", "j03"];
+    let valid_satellites = ["npp", "j01", "j02", "j03", "j04"];
     if valid_satellites.contains(&sat) {
         Ok(String::from(sat))
     } else {
@@ -60,7 +60,7 @@ fn parse_valid_satellite(sat: &str) -> Result<String, String> {
 #[derive(Args)]
 #[group(multiple = false, required = true)]
 struct Configs {
-    /// Use the built-in default configuration for this satellite id; one of npp, j01, j02, or j03.
+    /// Use the built-in default configuration for this satellite id; one of npp, j01, j02, j03, or j04.
     #[arg(short, long, value_name = "name", value_parser=parse_valid_satellite)]
     satellite: Option<String>,
 

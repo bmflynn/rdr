@@ -18,12 +18,6 @@ struct Item {
     meta: GranuleMeta,
 }
 
-fn get_config(satid: &str) -> Result<Config> {
-    get_default(satid)
-        .expect("failed to get default config")
-        .context("lookup failed")
-}
-
 pub fn create_file(
     config: &Config,
     start: &Time,
@@ -94,9 +88,10 @@ pub fn aggreggate<O: AsRef<Path>>(inputs: &[PathBuf], workdir: O) -> Result<Path
 
         // Get config for the satellite indicated by the input, otherwise bail
         if config.is_none() {
-            config = Some(get_config(&input_satid).with_context(|| {
-                format!("Failed to lookup spacecraft config for {input_satid:?}")
-            })?);
+            config = match get_default(&input_satid) {
+                Some(c) => Some(c),
+                None => bail!("No satelite configuration for {input_satid}"),
+            };
         }
         let config = config.as_ref().expect("we set config above");
         // Make sure input satellites match

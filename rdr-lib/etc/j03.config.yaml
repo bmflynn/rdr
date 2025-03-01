@@ -28,6 +28,8 @@ products:
     short_name: VIIRS-SCIENCE-RDR
     type_id: SCIENCE
     sensor: VIIRS
+    # Scan rate on J4 is 1.777 which can produce 49 scans per granule, so scan time was
+    # reduced to 85s to ensure <= 48 scans
     gran_len: 85000000
     apids:
       - { "num": 825, "name": "CAL", "max_expected": 1152 }
